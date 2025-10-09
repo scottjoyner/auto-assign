@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Speaker → Global Suggestions{% endblock %}
+
+{% block content %}
+<h1>Speaker → Global Suggestions</h1>
+
+<form method="GET" action="{{ url_for('suggest_page') }}" style="margin-bottom:8px;">
+  <div style="display:grid;grid-template-columns: 160px 160px 200px 1fr; gap:12px;">
+    <div>
+      <label>Top-k per speaker</label>
+      <input type="number" name="topk" min="1" max="50" value="{{ topk }}">
+    </div>
+    <div>
+      <label>Threshold (score ≥)</label>
+      <input type="number" step="0.01" name="thresh" value="{{ thresh }}">
+    </div>
+    <div>
+      <label>Max speakers (page)</label>
+      <input type="number" name="limit" min="1" max="1000" value="{{ limit }}">
+    </div>
+    <div style="align-self:end;">
+      <button type="submit">Refresh</button>
+      {% if seed %}
+        <input type="hidden" name="seed" value="{{ seed }}">
+        <span class="tag">Seed: {{ seed }}</span>
+      {% endif %}
+    </div>
+  </div>
+</form>
+
+{% if suggestions|length == 0 %}
+  <div class="muted">No suggestions above threshold. Try lowering the threshold or increasing top-k.</div>
+{% else %}
+  <form method="POST" action="{{ url_for('suggest_attach_bulk') }}">
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" onclick="for(const cb of document.querySelectorAll('.rowpick')) cb.checked=this.checked;"></th>
+          <th>Speaker</th>
+          <th>Candidates (Global)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in suggestions %}
+          <tr>
+            <td><input class="rowpick" type="checkbox" name="pair" value="{{ row.sp_id }}|{{ row.cands[0].gs_id }}|{{ '%.6f'|format(row.cands[0].score) }}"></td>
+            <td>
+              <div class="tag">sp: {{ row.sp_label or row.sp_id }}</div>
+              <div class="muted mono">{{ row.sp_id }}</div>
+            </td>
+            <td>
+              {% for c in row.cands %}
+                <div class="card" style="margin:6px 0;padding:6px;">
+                  <div>
+                    <span class="tag good">{{ c.display_label or c.gs_id }}</span>
+                    <span class="muted">score {{ '%.4f'|format(c.score) }}</span>
+                    {% if c.status %}<span class="tag">{{ c.status }}</span>{% endif %}
+                    {% if c.method %}<span class="tag">{{ c.method }}</span>{% endif %}
+                  </div>
+                  <div class="muted mono">{{ c.gs_id }}</div>
+                  <div style="margin-top:6px;">
+                    <form method="POST" action="{{ url_for('suggest_attach_one') }}" class="inline-form">
+                      <input type="hidden" name="speaker_id" value="{{ row.sp_id }}">
+                      <input type="hidden" name="global_id" value="{{ c.gs_id }}">
+                      <button type="submit">Attach</button>
+                    </form>
+                    <form method="POST" action="{{ url_for('global_speaker_rename') }}" class="inline-form">
+                      <input type="hidden" name="global_id" value="{{ c.gs_id }}">
+                      <input type="text" name="display_label" placeholder="Rename cluster" style="width:180px;">
+                      <button type="submit">Save label</button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="margin-top:8px;">
+      <button type="submit">Attach Selected</button>
+    </div>
+  </form>
+{% endif %}
+{% endblock %}

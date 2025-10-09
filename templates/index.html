@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Transcript Search A/B{% endblock %}
+
+{% block content %}
+<h1>Transcript Search A/B</h1>
+<p class="muted">Type a query and hit Search to compare v1 vs v2.</p>
+<div class="muted">
+  Compare transcription vectors <strong>v1</strong> vs <strong>v2</strong>.
+  Best utterance + speakers/clusters per hit. Audio playback prefers WAV/MP3.
+</div>
+
+<form method="POST" action="{{ url_for('search') }}">
+  <label>Query</label>
+  <textarea name="q" rows="3" required>{{ q or "" }}</textarea>
+  <div style="display:grid; grid-template-columns: 120px 120px 160px 1fr; gap: 12px; margin-top: 8px;">
+    <div>
+      <label>Top K</label>
+      <input type="number" name="k" min="1" max="100" value="{{ k or 10 }}">
+    </div>
+    <div>
+      <label>Utter pool (m)</label>
+      <input type="number" name="m" min="50" max="2000" value="{{ m or 200 }}">
+    </div>
+    <div>
+      <label>Mode</label>
+      <select name="mode">
+        <option value="both" {% if mode=='both' %}selected{% endif %}>v1 + v2</option>
+        <option value="v1"   {% if mode=='v1' %}selected{% endif %}>v1 only</option>
+        <option value="v2"   {% if mode=='v2' %}selected{% endif %}>v2 only</option>
+      </select>      
+    </div>
+    <div style="align-self:end;">
+      <button type="submit">Search</button>
+    </div>
+  </div>
+</form>
+
+{% if results %}
+<div class="row">
+  {% for variant in ['v2','v1'] %}
+  <div class="col">
+    <h2>{{ 'v2 (embedding_v2)' if variant=='v2' else 'v1 (embedding)' }}</h2>
+    {% if results[variant]|length == 0 %}
+      <div class="muted">No results.</div>
+    {% endif %}
+    {% for r in results[variant] %}
+    <div class="card">
+      <div>
+        <strong>{{ loop.index }}.</strong>
+        <span class="mono">{{ r.t_key }}</span>
+        <span class="muted">score {{ ("%0.4f" % (r.t_score or 0)) }}</span>
+      </div>
+      <div class="muted">Transcription: <span class="mono">{{ r.t_id }}</span> &middot; started: {{ r.t_started_at or '—' }}</div>
+
+      {% if r.u_text %}
+        <div style="margin-top:8px;"><strong>Best utterance</strong> ({{ '%.2fs'|format(r.u_start or 0) }}–{{ '%.2fs'|format(r.u_end or 0) }}):</div>
+        <div>{{ r.u_text }}</div>
+        <div class="muted">Abs: {{ r.u_abs_start or '—' }} → {{ r.u_abs_end or '—' }}</div>
+      {% endif %}
+
+      <div style="margin-top:6px;">
+        {% if r.is_lyrics %}<div class="tag lyrics">Lyrics</div>{% endif %}
+        {% if r.review_needed %}<div class="tag warn">Needs review</div>{% endif %}
+        {% if r.lyrics_score is not none %}<div class="tag">score {{ '%.2f'|format(r.lyrics_score) }}</div>{% endif %}
+        {% if r.s_idx is not none %}<div class="tag">seg#{{ r.s_idx }}</div>{% endif %}
+      </div>
+
+      {% if r.speakers and r.speakers|length > 0 %}
+      <div style="margin-top:6px;">
+        {% for sp in r.speakers %}
+          <div class="tag" title="{{ sp.id }}">Speaker: {{ sp.label or sp.id }}</div>
+          {% if sp.globals and sp.globals|length > 0 %}
+            {% for g in sp.globals %}
+              <div class="tag good" title="{{ g.gs_id }} ({{ g.method or '—' }})">Global: {{ g.display_label or g.gs_id }}</div>
+            {% endfor %}
+          {% else %}
+            <div class="tag warn">Unclustered</div>
+          {% endif %}
+          <form method="POST" action="{{ url_for('speaker_rename') }}" class="inline-form">
+            <input type="hidden" name="speaker_id" value="{{ sp.id }}">
+            <input type="text" name="new_label" placeholder="Rename {{ sp.label or sp.id }}" style="width:160px;">
+            <button type="submit">Save</button>
+          </form>
+          <form method="POST" action="{{ url_for('speaker_promote_to_global') }}" class="inline-form">
+            <input type="hidden" name="speaker_id" value="{{ sp.id }}">
+            <input type="text" name="display_label" placeholder="New global label (optional)" style="width:180px;">
+            <button type="submit">Promote→Global</button>
+          </form>
+          <a class="inline-form tag" href="{{ url_for('suggest_page', seed=sp.id) }}">Suggest clusters</a>
+          <br/>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if r.t_media %}
+        <details style="margin-top:8px;">
+          <summary>Media</summary>
+          <div class="muted">{{ r.t_media }}</div>
+          <div>
+            <a class="tag" href="{{ url_for('transcription_full', t_id=r.t_id) }}">Open full transcript →</a>
+          </div>
+          {% set play = best_audio_for_media(r.t_media) %}
+          {% if play and (play.endswith('.mp3') or play.endswith('.wav') or play.endswith('.m4a') or play.endswith('.aac') or play.endswith('.flac')) %}
+            <audio controls preload="none" src="{{ url_for('serve_media', path=play) }}#t={{ (r.u_start or 0)|int }}"></audio>
+          {% else %}
+            <video controls preload="metadata" src="{{ url_for('serve_media', path=(play or r.t_media)) }}#t={{ (r.u_start or 0)|int }}"></video>
+          {% endif %}
+        </details>
+      {% endif %}
+      {% if r.t_rttm %}
+        <div class="muted">RTTM: {{ r.t_rttm }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

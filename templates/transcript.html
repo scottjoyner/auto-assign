@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Transcript {{ t.key }}{% endblock %}
+
+{% block content %}
+<h1>Transcript <span class="mono">{{ t.key }}</span></h1>
+<div class="muted">id={{ t.id }} &middot; created={{ t.created_at or '—' }} &middot; started={{ t.started_at or '—' }}</div>
+
+{% if t.source_media %}
+  <details style="margin-top:8px;" open>
+    <summary>Media</summary>
+    <div class="muted">{{ t.source_media }}</div>
+    {% set play = best_audio_for_media(t.source_media) %}
+    {% if play and (play.endswith('.mp3') or play.endswith('.wav') or play.endswith('.m4a') or play.endswith('.aac') or play.endswith('.flac')) %}
+      <audio controls preload="metadata" src="{{ url_for('serve_media', path=play) }}"></audio>
+    {% else %}
+      <video controls preload="metadata" src="{{ url_for('serve_media', path=(play or t.source_media)) }}"></video>
+    {% endif %}
+  </details>
+{% endif %}
+
+{% if t.source_json %}
+  <div class="muted">source_json: {{ t.source_json }}</div>
+{% endif %}
+{% if t.source_rttm %}
+  <div class="muted">RTTM: {{ t.source_rttm }}</div>
+{% endif %}
+
+<h2>Utterances</h2>
+<table>
+  <thead>
+    <tr><th>#</th><th>Time</th><th>Speaker</th><th>Global Cluster</th><th>Text</th><th>Flags</th></tr>
+  </thead>
+  <tbody>
+    {% for u in utterances %}
+      <tr>
+        <td class="mono">{{ u.idx or loop.index }}</td>
+        <td class="mono">{{ '%.2f'|format(u.start or 0) }}–{{ '%.2f'|format(u.end or 0) }}</td>
+        <td>
+          {% if u.speaker %}
+            <div class="tag"> {{ u.speaker.label or u.speaker.id }} </div>
+          {% else %}
+            <div class="tag warn">unknown</div>
+          {% endif %}
+        </td>
+        <td>
+          {% if u.globals and u.globals|length>0 %}
+            {% for g in u.globals %}
+              <div class="tag good" title="{{ g.gs_id }}">{{ g.display_label or g.gs_id }}</div>
+            {% endfor %}
+          {% else %}
+            <div class="tag warn">unclustered</div>
+          {% endif %}
+        </td>
+        <td>{{ u.text }}</td>
+        <td>
+          {% if u.is_lyrics %}<div class="tag lyrics">lyrics</div>{% endif %}
+          {% if u.review_needed %}<div class="tag warn">needs review</div>{% endif %}
+          {% if u.lyrics_score is not none %}<div class="tag">score {{ '%.2f'|format(u.lyrics_score) }}</div>{% endif %}
+          {% if u.seg_idx is not none %}<div class="tag">seg#{{ u.seg_idx }}</div>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
