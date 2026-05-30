@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
+from .events import EventType, ROUTER_SNAPSHOT_EVENTS
 from .models import (
     AssignmentApprovalRequest,
     AssignmentCandidate,
@@ -180,8 +181,8 @@ class AssignmentService:
                 "canonical_source": "neo4j_via_assistx",
             }
         event = EventEnvelope(
-            event_type="assign.assignment.approved",
-            idempotency_key=f"assign.assignment.approved:{assignment_id}:{request.approved_by}:{request.approval_reason}",
+            event_type=EventType.ASSIGNMENT_APPROVED,
+            idempotency_key=f"{EventType.ASSIGNMENT_APPROVED}:{assignment_id}:{request.approved_by}:{request.approval_reason}",
             subject=assignment.get("task_id", assignment_id),
             payload={
                 "assignment_id": assignment_id,
@@ -212,8 +213,8 @@ class AssignmentService:
                 "canonical_source": "neo4j_via_assistx",
             }
         event = EventEnvelope(
-            event_type="assign.assignment.released",
-            idempotency_key=f"assign.assignment.released:{assignment_id}:{request.reason}:{request.retryable}",
+            event_type=EventType.ASSIGNMENT_RELEASED,
+            idempotency_key=f"{EventType.ASSIGNMENT_RELEASED}:{assignment_id}:{request.reason}:{request.retryable}",
             subject=assignment.get("task_id", assignment_id),
             payload={
                 "assignment_id": assignment_id,
@@ -238,8 +239,8 @@ class AssignmentService:
         heartbeat_id = f"heartbeat_{uuid4().hex}"
         self.cache.record_heartbeat(heartbeat_id, heartbeat)
         event = EventEnvelope(
-            event_type="assign.worker.heartbeat.recorded",
-            idempotency_key=f"assign.worker.heartbeat.recorded:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
+            event_type=EventType.WORKER_HEARTBEAT_RECORDED,
+            idempotency_key=f"{EventType.WORKER_HEARTBEAT_RECORDED}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
             subject=heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
             payload={"heartbeat_id": heartbeat_id, **heartbeat.model_dump(mode="json")},
         )
@@ -269,6 +270,7 @@ class AssignmentService:
         events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
         actions: list[dict] = []
         skipped_already_processed = 0
+        router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
             if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
@@ -277,7 +279,7 @@ class AssignmentService:
             event_name = event.get("event_type")
             payload = event.get("payload", {}) or {}
             subject = event.get("subject")
-            if event_name == "task.candidate.created":
+            if event_name == EventType.TASK_CANDIDATE_CREATED:
                 task_id = payload.get("task_id") or subject
                 if task_id:
                     decision = await self.evaluate(
@@ -299,7 +301,7 @@ class AssignmentService:
                         "action": "skipped",
                         "reason": "missing_task_id",
                     }
-            elif event_name in {"router.quota_snapshot.recorded", "router.service_snapshot.recorded"}:
+            elif event_name in router_snapshot_event_types:
                 tick = await self.scheduler_tick(
                     SchedulerTickRequest(
                         dry_run=dry_run,
@@ -433,11 +435,11 @@ class AssignmentService:
 
     def _decision_event(self, decision: AssignmentDecision, dry_run: bool) -> EventEnvelope:
         if decision.status == AssignmentStatus.APPROVAL_REQUIRED:
-            event_type = "assign.assignment.approval_required"
+            event_type = EventType.ASSIGNMENT_APPROVAL_REQUIRED
         elif decision.status == AssignmentStatus.RECOMMENDED:
-            event_type = "assign.assignment.recommended"
+            event_type = EventType.ASSIGNMENT_RECOMMENDED
         else:
-            event_type = "assign.assignment.skipped"
+            event_type = EventType.ASSIGNMENT_SKIPPED
         return EventEnvelope(
             event_type=event_type,
             idempotency_key=decision.idempotency_key,
