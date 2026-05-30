@@ -12,6 +12,7 @@ from .models import (
     AssignmentApprovalRequest,
     AssignmentEvaluateRequest,
     AssignmentReleaseRequest,
+    EventEnvelope,
     HealthResponse,
     HeartbeatRequest,
     SchedulerTickRequest,
@@ -70,6 +71,14 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
             "direct_workers_enabled": service.settings.direct_workers_enabled,
         },
     )
+
+
+@app.post("/api/events")
+async def ingest_event(
+    request: EventEnvelope,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    return service.ingest_event(request)
 
 
 @app.post("/api/assignments/evaluate")
@@ -176,6 +185,15 @@ async def list_heartbeats(
         "canonical_source": "neo4j_via_assistx",
         "heartbeats": service.list_heartbeats(limit=limit),
     }
+
+
+@app.get("/api/heartbeats/stale")
+async def list_stale_heartbeats(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    stale_after_seconds: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return service.list_stale_heartbeats(stale_after_seconds=stale_after_seconds, limit=limit)
 
 
 @app.get("/api/outbox/summary")
