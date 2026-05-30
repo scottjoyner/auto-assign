@@ -83,7 +83,7 @@ def test_health_reports_brain_and_cache(tmp_path):
     assert payload["cache"]["role"] == "cache_outbox_only"
 
 
-def test_inbound_event_intake_queues_outbox_event(tmp_path):
+def test_inbound_event_intake_records_inbound_cache_only(tmp_path):
     client = make_client(tmp_path)
 
     response = client.post(
@@ -99,8 +99,14 @@ def test_inbound_event_intake_queues_outbox_event(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["accepted"] is True
-    assert payload["canonical_source"] == "neo4j_via_assistx"
-    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+    assert payload["source"] == "sqlite_inbound_event_cache"
+    assert payload["cache_role"] == "received_event_mirror"
+    assert client.get("/api/outbox/summary").json()["summary"] == {}
+
+    inbound = client.get("/api/events").json()
+    assert inbound["source"] == "sqlite_inbound_event_cache"
+    assert inbound["canonical_source"] == "neo4j_via_assistx"
+    assert inbound["events"][0]["event_type"] == "router.quota_snapshot.recorded"
 
 
 def test_evaluate_assignment_writes_cache_outbox(tmp_path):
@@ -244,6 +250,14 @@ def test_ops_summary_reports_cache_state(tmp_path):
     client = make_client(tmp_path)
     create_assignment(client, "ASS-ops")
     client.post("/api/heartbeats", json={"node_id": "node-ops", "status": "online"})
+    client.post(
+        "/api/events",
+        json={
+            "event_type": "router.service_snapshot.recorded",
+            "idempotency_key": "router.service_snapshot.recorded:test",
+            "subject": "auto-router",
+        },
+    )
 
     summary = client.get("/api/ops/summary").json()
 
@@ -251,5 +265,7 @@ def test_ops_summary_reports_cache_state(tmp_path):
     assert summary["canonical_source"] == "neo4j_via_assistx"
     assert summary["assignments_by_status"] == {"recommended": 1}
     assert summary["outbox_by_status"] == {"pending": 2}
+    assert summary["inbound_by_type"] == {"router.service_snapshot.recorded": 1}
+    assert summary["inbound_events"]["count"] == 1
     assert summary["heartbeats"]["count"] == 1
     assert summary["stale_heartbeat_seconds"] > 0
