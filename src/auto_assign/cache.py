@@ -201,6 +201,52 @@ class CacheStore:
                 ),
             )
 
+    def pending_events(self, limit: int = 25) -> list[EventEnvelope]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM outbox_events
+                WHERE status IN ('pending', 'failed')
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (utc_now().isoformat(), limit),
+            ).fetchall()
+        return [EventEnvelope.model_validate_json(row["payload_json"]) for row in rows]
+
+    def mark_event_delivered(self, idempotency_key: str) -> None:
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE outbox_events
+                SET status='delivered', updated_at=?, last_error=NULL
+                WHERE idempotency_key=?
+                """,
+                (now, idempotency_key),
+            )
+
+    def mark_event_failed(self, idempotency_key: str, error: str, dead_letter: bool = False) -> None:
+        now = utc_now().isoformat()
+        status = "dead_letter" if dead_letter else "failed"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE outbox_events
+                SET status=?, attempts=attempts + 1, updated_at=?, last_error=?
+                WHERE idempotency_key=?
+                """,
+                (status, now, error[:500], idempotency_key),
+            )
+
+    def reconcile_delivered(self, idempotency_keys: list[str]) -> int:
+        count = 0
+        for key in idempotency_keys:
+            self.mark_event_delivered(key)
+            count += 1
+        return count
+
     def outbox_summary(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
