@@ -134,3 +134,20 @@ async def outbox_summary(service: Annotated[AssignmentService, Depends(get_assig
         "canonical_source": "neo4j_via_assistx",
         "summary": service.cache.outbox_summary(),
     }
+
+
+@app.post("/api/outbox/dispatch")
+async def dispatch_outbox(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    dry_run: bool = Query(default=True),
+    limit: int = Query(default=25, ge=1, le=500),
+):
+    return await service.dispatch_outbox(dry_run=dry_run, limit=limit)
+
+
+@app.post("/api/outbox/reconcile")
+async def reconcile_outbox(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    return await service.reconcile_outbox(limit=limit)
