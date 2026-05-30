@@ -15,8 +15,42 @@ def test_local_only_task_blocks_free_api_lane():
     decision = scorer.score(candidate, router)
 
     assert decision.selected_lane == Lane.LOCAL_ONLY
-    assert any(reason.reason_code == "privacy_denied" for reason in decision.skipped_lanes)
+    assert any(reason.reason_code in {"privacy_denied", "privacy_cloud_denied"} for reason in decision.skipped_lanes)
     assert decision.cache_only is True
+
+
+def test_explicit_local_only_blocks_router_model_and_free_api():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(
+        task_id="ASS-explicit-local",
+        local_only=True,
+        allow_cloud=False,
+        allowed_lanes=[Lane.ROUTER_MODEL, Lane.FREE_API, Lane.LOCAL_ONLY],
+    )
+    router = RouterSnapshot(reachable=True, context_revision="rev-1")
+
+    decision = scorer.score(candidate, router)
+
+    assert decision.selected_lane == Lane.LOCAL_ONLY
+    assert {reason.reason_code for reason in decision.skipped_lanes} >= {
+        "router_cloud_denied",
+        "privacy_cloud_denied",
+    }
+
+
+def test_sensitive_task_blocks_hosted_free_api():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(
+        task_id="ASS-sensitive",
+        sensitive=True,
+        allowed_lanes=[Lane.FREE_API, Lane.PAPERCLIP],
+    )
+    router = RouterSnapshot(reachable=True, context_revision="rev-1")
+
+    decision = scorer.score(candidate, router)
+
+    assert decision.selected_lane == Lane.PAPERCLIP
+    assert any(reason.reason_code == "privacy_cloud_denied" for reason in decision.skipped_lanes)
 
 
 def test_approval_required_blocks_dispatch_recommendation():
@@ -60,6 +94,18 @@ def test_neo4j_terminal_state_wins_over_local_candidate():
     assert decision.selected_lane == Lane.BLOCKED
     assert decision.canonical_status == "done"
     assert "AssistX/Neo4j reports terminal state" in decision.reasons[0]
+
+
+def test_neo4j_active_assignment_blocks_duplicate():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(task_id="ASS-running", allowed_lanes=[Lane.PAPERCLIP])
+    router = RouterSnapshot(reachable=True)
+
+    decision = scorer.score(candidate, router, canonical_status="running")
+
+    assert decision.status == AssignmentStatus.BLOCKED
+    assert decision.selected_lane == Lane.BLOCKED
+    assert any(reason.reason_code == "duplicate_active_assignment" for reason in decision.skipped_lanes)
 
 
 def test_assignment_and_decision_ids_are_deterministic_for_same_inputs():
