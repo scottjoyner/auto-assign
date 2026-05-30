@@ -24,6 +24,13 @@ class AssignmentStatus(StrEnum):
     RELEASED = "released"
 
 
+class AssignmentControlMode(StrEnum):
+    ENABLED = "enabled"
+    PAUSED = "paused"
+    DRAINING = "draining"
+    MAINTENANCE = "maintenance"
+
+
 class Lane(StrEnum):
     PAPERCLIP = "paperclip"
     ROUTER_MODEL = "router_model"
@@ -142,6 +149,14 @@ class AssignmentApprovalRequest(BaseModel):
 class AssignmentReleaseRequest(BaseModel):
     reason: str = "operator_release"
     retryable: bool = True
+    dry_run: bool = True
+
+
+class AssignmentControlRequest(BaseModel):
+    mode: AssignmentControlMode
+    reason: str | None = None
+    updated_by: str = "operator"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = True
 
 
