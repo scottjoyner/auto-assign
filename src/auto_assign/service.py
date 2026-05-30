@@ -162,6 +162,18 @@ class AssignmentService:
         self.cache.enqueue_event(event)
         return event
 
+    def ingest_event(self, event: EventEnvelope) -> dict:
+        self.cache.enqueue_event(event)
+        return {
+            "accepted": True,
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "idempotency_key": event.idempotency_key,
+            "subject": event.subject,
+            "canonical_source": "neo4j_via_assistx",
+            "cache_role": "outbox_replay_buffer",
+        }
+
     async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
         events = self.cache.pending_events(limit=limit)
         delivered = 0
@@ -230,6 +242,17 @@ class AssignmentService:
     def list_heartbeats(self, limit: int = 50) -> list[dict]:
         return self.cache.list_heartbeats(limit=limit)
 
+    def list_stale_heartbeats(self, stale_after_seconds: int | None = None, limit: int = 50) -> dict:
+        threshold = stale_after_seconds or self.settings.stale_heartbeat_seconds
+        stale = self.cache.list_stale_heartbeats(stale_after_seconds=threshold, limit=limit)
+        return {
+            "source": "sqlite_cache_mirror",
+            "canonical_source": "neo4j_via_assistx",
+            "stale_after_seconds": threshold,
+            "count": len(stale),
+            "heartbeats": stale,
+        }
+
     def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict]:
         return self.cache.list_outbox_events(limit=limit, status=status)
 
@@ -242,6 +265,7 @@ class AssignmentService:
         summary["scheduler"]["last_tick_at"] = self.last_tick_at
         summary["dispatch_enabled"] = self.settings.dispatch_enabled
         summary["direct_workers_enabled"] = self.settings.direct_workers_enabled
+        summary["stale_heartbeat_seconds"] = self.settings.stale_heartbeat_seconds
         return summary
 
     def _decision_event(self, decision: AssignmentDecision, dry_run: bool) -> EventEnvelope:
