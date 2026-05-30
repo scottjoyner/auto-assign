@@ -12,8 +12,19 @@ from .models import (
 )
 from .settings import Settings
 
-SENSITIVE_PRIVACY_LABELS = {"local_only", "private_data", "voice_auth", "enrollment_sample", "secrets"}
-CLOUD_LANES = {Lane.FREE_API}
+SENSITIVE_PRIVACY_LABELS = {
+    "local_only",
+    "private",
+    "private_data",
+    "secret",
+    "secrets",
+    "voice_auth",
+    "enrollment",
+    "enrollment_sample",
+}
+HOSTED_LANES = {Lane.FREE_API}
+TERMINAL_STATUSES = {"done", "cancelled", "failed_terminal", "terminal", "complete", "completed"}
+ACTIVE_ASSIGNMENT_STATUSES = {"reserved", "dispatched", "running", "claimed", "claimed_passive"}
 
 
 class AssignmentScorer:
@@ -30,14 +41,23 @@ class AssignmentScorer:
         lanes = candidate_lanes or candidate.allowed_lanes
         skipped: list[SkipReason] = []
         reasons: list[str] = []
+        normalized_status = (canonical_status or "").lower()
 
-        if canonical_status in {"done", "cancelled", "failed_terminal"}:
+        if normalized_status in TERMINAL_STATUSES:
             return self._blocked(
                 candidate,
                 router,
                 canonical_status,
                 "canonical_terminal_state",
                 f"AssistX/Neo4j reports terminal state: {canonical_status}",
+            )
+        if normalized_status in ACTIVE_ASSIGNMENT_STATUSES:
+            return self._blocked(
+                candidate,
+                router,
+                canonical_status,
+                "duplicate_active_assignment",
+                f"AssistX/Neo4j reports active assignment state: {canonical_status}",
             )
 
         if candidate.approval_required or candidate.risk_level.lower() in {"high", "critical"}:
@@ -53,16 +73,16 @@ class AssignmentScorer:
             ]
             return decision
 
-        privacy_labels = set(candidate.privacy_labels)
-        sensitive = bool(privacy_labels & SENSITIVE_PRIVACY_LABELS)
+        sensitive = self._is_sensitive(candidate)
+        local_only = self._is_local_only(candidate)
 
         scored: list[tuple[float, Lane, str, list[str]]] = []
         for lane in lanes:
-            lane_skips = self._skip_reasons(candidate, router, lane, sensitive)
+            lane_skips = self._skip_reasons(candidate, router, lane, sensitive, local_only)
             if lane_skips:
                 skipped.extend(lane_skips)
                 continue
-            score, lane_reasons = self._score_lane(candidate, router, lane, sensitive)
+            score, lane_reasons = self._score_lane(candidate, router, lane, sensitive, local_only)
             scored.append((score, lane, self._target_for_lane(lane), lane_reasons))
 
         if not scored:
@@ -92,14 +112,23 @@ class AssignmentScorer:
         router: RouterSnapshot,
         lane: Lane,
         sensitive: bool,
+        local_only: bool,
     ) -> list[SkipReason]:
         skips: list[SkipReason] = []
-        if lane in CLOUD_LANES and sensitive:
+        if lane in HOSTED_LANES and (sensitive or local_only or not candidate.allow_cloud):
             skips.append(
                 SkipReason(
                     lane=lane,
-                    reason_code="privacy_denied",
-                    reason="sensitive or local-only work cannot use cloud/free API lanes",
+                    reason_code="privacy_cloud_denied",
+                    reason="sensitive, local-only, or cloud-disallowed work cannot use hosted/free API lanes",
+                )
+            )
+        if lane == Lane.ROUTER_MODEL and (local_only or not candidate.allow_cloud):
+            skips.append(
+                SkipReason(
+                    lane=lane,
+                    reason_code="router_cloud_denied",
+                    reason="router model lane is skipped because the task is local-only or cloud-disallowed",
                 )
             )
         if lane == Lane.DIRECT_WORKER and not self.settings.direct_workers_enabled:
@@ -134,6 +163,7 @@ class AssignmentScorer:
         router: RouterSnapshot,
         lane: Lane,
         sensitive: bool,
+        local_only: bool,
     ) -> tuple[float, list[str]]:
         base_by_lane = {
             Lane.PAPERCLIP: 0.82,
@@ -147,9 +177,9 @@ class AssignmentScorer:
 
         if lane == Lane.PAPERCLIP:
             reasons.append("paperclip is the current approved cutover execution lane")
-        if lane == Lane.LOCAL_ONLY and sensitive:
+        if lane == Lane.LOCAL_ONLY and (sensitive or local_only):
             score += 0.1
-            reasons.append("local-only lane preferred for sensitive work")
+            reasons.append("local-only lane preferred for sensitive or local-only work")
         if lane == Lane.ROUTER_MODEL:
             reasons.append("router model lane is available for planning/drafting/review")
         if lane == Lane.FREE_API:
@@ -182,6 +212,18 @@ class AssignmentScorer:
         metadata = router.quota.get("metadata", {})
         mode = metadata.get("mode") or router.quota.get("mode")
         return mode == "preserve"
+
+    def _is_sensitive(self, candidate: AssignmentCandidate) -> bool:
+        labels = {str(label).lower() for label in candidate.privacy_labels}
+        if candidate.privacy:
+            labels.add(candidate.privacy.lower())
+        return bool(candidate.sensitive or labels & SENSITIVE_PRIVACY_LABELS)
+
+    def _is_local_only(self, candidate: AssignmentCandidate) -> bool:
+        labels = {str(label).lower() for label in candidate.privacy_labels}
+        if candidate.privacy:
+            labels.add(candidate.privacy.lower())
+        return bool(candidate.local_only or "local_only" in labels or "private" in labels or "secret" in labels)
 
     def _base_decision(
         self,
