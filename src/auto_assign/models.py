@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def utc_now() -> datetime:
@@ -39,24 +39,34 @@ class EventEnvelope(BaseModel):
     source_service: str = "auto-assign"
     occurred_at: datetime = Field(default_factory=utc_now)
     idempotency_key: str
-    schema_version: str = "1.0"
+    schema_version: str = "assign.v1"
     subject: str
     payload: dict[str, Any] = Field(default_factory=dict)
     privacy: list[str] = Field(default_factory=list)
 
 
 class AssignmentCandidate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     task_id: str
+    title: str | None = None
+    prompt: str | None = None
     status: str = "ready"
     priority: str = "background"
+    queue: str = "backlog"
     risk_level: str = "low"
     approval_required: bool = False
+    privacy: str | None = None
     privacy_labels: list[str] = Field(default_factory=list)
+    local_only: bool = False
+    sensitive: bool = False
+    allow_cloud: bool = True
     required_capabilities: list[str] = Field(default_factory=list)
     allowed_lanes: list[Lane] = Field(default_factory=lambda: [Lane.PAPERCLIP, Lane.ROUTER_MODEL])
     retry_count: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     summary: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RouterSnapshot(BaseModel):
@@ -68,6 +78,7 @@ class RouterSnapshot(BaseModel):
     quota: dict[str, Any] = Field(default_factory=dict)
     circuits: dict[str, Any] = Field(default_factory=dict)
     agent_clis: list[dict[str, Any]] = Field(default_factory=list)
+    ops_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkipReason(BaseModel):
