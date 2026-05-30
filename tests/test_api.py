@@ -109,6 +109,51 @@ def test_inbound_event_intake_records_inbound_cache_only(tmp_path):
     assert inbound["events"][0]["event_type"] == "router.quota_snapshot.recorded"
 
 
+def test_process_task_candidate_event_triggers_dry_run_assignment(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/events",
+        json={
+            "event_type": "task.candidate.created",
+            "idempotency_key": "task.candidate.created:ASS-trigger",
+            "subject": "ASS-trigger",
+            "payload": {"task_id": "ASS-trigger"},
+        },
+    )
+
+    response = client.post("/api/events/process?event_type=task.candidate.created&dry_run=true")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processed"] == 1
+    assert payload["actions"][0]["action"] == "assignment_evaluated"
+    assert payload["actions"][0]["task_id"] == "ASS-trigger"
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+
+
+def test_process_router_snapshot_event_triggers_scheduler_tick(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/events",
+        json={
+            "event_type": "router.service_snapshot.recorded",
+            "idempotency_key": "router.service_snapshot.recorded:trigger",
+            "subject": "auto-router",
+        },
+    )
+
+    response = client.post(
+        "/api/events/process?event_type=router.service_snapshot.recorded&dry_run=true&limit=2"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processed"] == 1
+    assert payload["actions"][0]["action"] == "scheduler_tick"
+    assert payload["actions"][0]["evaluated"] == 2
+    assert len(client.get("/api/scheduler/runs").json()["runs"]) == 1
+
+
 def test_evaluate_assignment_writes_cache_outbox(tmp_path):
     client = make_client(tmp_path)
 
