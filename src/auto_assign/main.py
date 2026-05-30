@@ -94,6 +94,20 @@ async def list_inbound_events(
     }
 
 
+@app.post("/api/events/process")
+async def process_inbound_events(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    event_type: str | None = Query(default=None),
+    dry_run: bool = Query(default=True),
+    limit: int = Query(default=25, ge=1, le=500),
+):
+    return await service.process_inbound_events(
+        event_type=event_type,
+        dry_run=dry_run,
+        limit=limit,
+    )
+
+
 @app.post("/api/assignments/evaluate")
 async def evaluate_assignment(
     request: AssignmentEvaluateRequest,
