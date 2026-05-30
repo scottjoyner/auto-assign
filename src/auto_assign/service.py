@@ -407,9 +407,6 @@ class AssignmentService:
     def list_inbound_events(self, limit: int = 50, event_type: str | None = None) -> list[dict]:
         return self.cache.list_inbound_events(limit=limit, event_type=event_type)
 
-    def list_inbound_processing(self, limit: int = 50) -> list[dict]:
-        return self.list_inbound_processing(limit=limit)
-
     def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict]:
         return self.cache.list_outbox_events(limit=limit, status=status)
 
