@@ -9,7 +9,9 @@ from . import __version__
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
 from .models import (
+    AssignmentApprovalRequest,
     AssignmentEvaluateRequest,
+    AssignmentReleaseRequest,
     HealthResponse,
     HeartbeatRequest,
     SchedulerTickRequest,
@@ -110,6 +112,30 @@ async def get_assignment(
         "canonical_source": "neo4j_via_assistx",
         "assignment": assignment,
     }
+
+
+@app.post("/api/assignments/{assignment_id}/approve")
+async def approve_assignment(
+    assignment_id: str,
+    request: AssignmentApprovalRequest,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    result = await service.approve_assignment(assignment_id, request)
+    if not result.get("accepted"):
+        raise HTTPException(status_code=404, detail=result)
+    return result
+
+
+@app.post("/api/assignments/{assignment_id}/release")
+async def release_assignment(
+    assignment_id: str,
+    request: AssignmentReleaseRequest,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    result = await service.release_assignment(assignment_id, request)
+    if not result.get("accepted"):
+        raise HTTPException(status_code=404, detail=result)
+    return result
 
 
 @app.post("/api/heartbeats")
