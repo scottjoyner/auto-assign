@@ -99,6 +99,54 @@ class CacheStore:
         except Exception as exc:  # pragma: no cover - defensive health path
             return {"reachable": False, "path": str(self.path), "error": str(exc), "role": "cache_outbox_only"}
 
+    def record_scheduler_run(
+        self,
+        scheduler_run_id: str,
+        trigger_reason: str,
+        dry_run: bool,
+        evaluated_count: int,
+        recommended_count: int,
+        skipped_count: int,
+        error_summary: str | None = None,
+    ) -> None:
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO scheduler_runs (
+                    scheduler_run_id, started_at, completed_at, trigger_reason,
+                    dry_run, evaluated_count, recommended_count, skipped_count,
+                    error_summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scheduler_run_id,
+                    now,
+                    now,
+                    trigger_reason,
+                    int(dry_run),
+                    evaluated_count,
+                    recommended_count,
+                    skipped_count,
+                    error_summary,
+                ),
+            )
+
+    def list_scheduler_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT scheduler_run_id, started_at, completed_at, trigger_reason,
+                       dry_run, evaluated_count, recommended_count, skipped_count,
+                       error_summary
+                FROM scheduler_runs
+                ORDER BY completed_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_assignment(self, decision: AssignmentDecision) -> None:
         now = utc_now().isoformat()
         payload = decision.model_dump(mode="json")
@@ -179,6 +227,20 @@ class CacheStore:
                 ),
             )
 
+    def list_heartbeats(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT heartbeat_id, node_id, worker_id, assignment_id, status,
+                       received_at, payload_json
+                FROM heartbeats
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
     def enqueue_event(self, event: EventEnvelope) -> None:
         now = utc_now().isoformat()
         with self.connect() as conn:
@@ -214,6 +276,23 @@ class CacheStore:
                 (utc_now().isoformat(), limit),
             ).fetchall()
         return [EventEnvelope.model_validate_json(row["payload_json"]) for row in rows]
+
+    def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
+        sql = """
+            SELECT event_id, event_type, idempotency_key, subject, payload_json,
+                   status, attempts, next_attempt_at, last_error, created_at, updated_at
+            FROM outbox_events
+        """
+        params: tuple[Any, ...]
+        if status:
+            sql += " WHERE status = ?"
+            params = (status, limit)
+        else:
+            params = (limit,)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
     def mark_event_delivered(self, idempotency_key: str) -> None:
         now = utc_now().isoformat()
@@ -253,3 +332,31 @@ class CacheStore:
                 "SELECT status, COUNT(*) AS count FROM outbox_events GROUP BY status"
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
+
+    def ops_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            assignment_rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM assignments GROUP BY status"
+            ).fetchall()
+            latest_scheduler = conn.execute(
+                "SELECT completed_at FROM scheduler_runs ORDER BY completed_at DESC LIMIT 1"
+            ).fetchone()
+            latest_heartbeat = conn.execute(
+                "SELECT received_at FROM heartbeats ORDER BY received_at DESC LIMIT 1"
+            ).fetchone()
+            heartbeat_count = conn.execute("SELECT COUNT(*) AS count FROM heartbeats").fetchone()
+        return {
+            "cache_role": "cache_outbox_only",
+            "canonical_source": "neo4j_via_assistx",
+            "assignments_by_status": {
+                row["status"]: int(row["count"]) for row in assignment_rows
+            },
+            "outbox_by_status": self.outbox_summary(),
+            "heartbeats": {
+                "count": int(heartbeat_count["count"]) if heartbeat_count else 0,
+                "latest_received_at": latest_heartbeat["received_at"] if latest_heartbeat else None,
+            },
+            "scheduler": {
+                "latest_completed_at": latest_scheduler["completed_at"] if latest_scheduler else None,
+            },
+        }
