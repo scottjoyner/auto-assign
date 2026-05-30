@@ -81,6 +81,19 @@ async def ingest_event(
     return service.ingest_event(request)
 
 
+@app.get("/api/events")
+async def list_inbound_events(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=50, ge=1, le=500),
+    event_type: str | None = Query(default=None),
+):
+    return {
+        "source": "sqlite_inbound_event_cache",
+        "canonical_source": "neo4j_via_assistx",
+        "events": service.list_inbound_events(limit=limit, event_type=event_type),
+    }
+
+
 @app.post("/api/assignments/evaluate")
 async def evaluate_assignment(
     request: AssignmentEvaluateRequest,
