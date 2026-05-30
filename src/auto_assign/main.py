@@ -162,6 +162,116 @@ async def list_assignments(
     }
 
 
+@app.get("/api/assignments/summary")
+async def assignment_summary(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    ops = service.ops_summary()
+    stale = service.list_stale_heartbeats(limit=limit)
+    recent_assignments = service.list_assignments(limit=limit)
+    recommendations = _assignment_summary_recommendations(
+        ops=ops,
+        stale_count=stale.get("count", 0),
+        dispatch_enabled=service.settings.dispatch_enabled,
+        direct_workers_enabled=service.settings.direct_workers_enabled,
+    )
+    return {
+        "source": "sqlite_cache_mirror",
+        "canonical_source": "neo4j_via_assistx",
+        "cache_role": "assignment_governor_read_model",
+        "assignments_by_status": ops.get("assignments_by_status", {}),
+        "outbox_by_status": ops.get("outbox_by_status", {}),
+        "inbound_by_type": ops.get("inbound_by_type", {}),
+        "heartbeats": {
+            **ops.get("heartbeats", {}),
+            "stale_count": stale.get("count", 0),
+            "stale_after_seconds": stale.get("stale_after_seconds"),
+        },
+        "scheduler": ops.get("scheduler", {}),
+        "safety": {
+            "dispatch_enabled": service.settings.dispatch_enabled,
+            "direct_workers_enabled": service.settings.direct_workers_enabled,
+            "cache_is_canonical": False,
+            "canonical_source": "neo4j_via_assistx",
+        },
+        "recent_assignments": recent_assignments,
+        "stale_heartbeats": stale.get("heartbeats", []),
+        "recommendations": recommendations,
+    }
+
+
+def _assignment_summary_recommendations(
+    ops: dict,
+    stale_count: int,
+    dispatch_enabled: bool,
+    direct_workers_enabled: bool,
+) -> list[dict]:
+    recommendations: list[dict] = []
+    outbox = ops.get("outbox_by_status", {}) or {}
+    assignments = ops.get("assignments_by_status", {}) or {}
+    pending = int(outbox.get("pending", 0))
+    failed = int(outbox.get("failed", 0))
+    dead_letter = int(outbox.get("dead_letter", 0))
+    if pending:
+        recommendations.append(
+            {
+                "level": "info",
+                "action": "dispatch_or_reconcile_outbox",
+                "reason": "pending assign.* events are waiting for AssistX/Neo4j materialization",
+            }
+        )
+    if failed or dead_letter:
+        recommendations.append(
+            {
+                "level": "warning",
+                "action": "inspect_outbox_failures",
+                "reason": "failed or dead-lettered outbox events require operator review",
+            }
+        )
+    if stale_count:
+        recommendations.append(
+            {
+                "level": "warning",
+                "action": "inspect_stale_heartbeats",
+                "reason": "worker/node heartbeats are stale and should not receive new assignments",
+            }
+        )
+    if assignments.get("approval_required"):
+        recommendations.append(
+            {
+                "level": "info",
+                "action": "review_required_approvals",
+                "reason": "some assignments are blocked until AssistX/Neo4j approval exists",
+            }
+        )
+    if not dispatch_enabled:
+        recommendations.append(
+            {
+                "level": "info",
+                "action": "dry_run_only",
+                "reason": "dispatch is disabled; auto-assign is operating as a dry-run governor",
+            }
+        )
+    if not direct_workers_enabled:
+        recommendations.append(
+            {
+                "level": "info",
+                "action": "direct_workers_disabled",
+                "reason": "direct worker lane is disabled until sandbox/approval/artifact controls are implemented",
+            }
+        )
+    if not recommendations:
+        recommendations.append(
+            {
+                "level": "info",
+                "action": "steady_state",
+                "reason": "no local cache/outbox/heartbeat risks detected",
+            }
+        )
+    return recommendations
+
+
 @app.get("/api/assignments/{assignment_id}")
 async def get_assignment(
     assignment_id: str,
