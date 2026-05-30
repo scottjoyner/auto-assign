@@ -60,3 +60,28 @@ def test_neo4j_terminal_state_wins_over_local_candidate():
     assert decision.selected_lane == Lane.BLOCKED
     assert decision.canonical_status == "done"
     assert "AssistX/Neo4j reports terminal state" in decision.reasons[0]
+
+
+def test_assignment_and_decision_ids_are_deterministic_for_same_inputs():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(task_id="ASS-deterministic", allowed_lanes=[Lane.PAPERCLIP])
+    router = RouterSnapshot(reachable=True, context_revision="rev-stable")
+
+    first = scorer.score(candidate, router)
+    second = scorer.score(candidate, router)
+
+    assert first.assignment_id == second.assignment_id
+    assert first.decision_id == second.decision_id
+    assert first.idempotency_key == second.idempotency_key
+
+
+def test_decision_id_changes_when_router_context_revision_changes():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(task_id="ASS-context", allowed_lanes=[Lane.PAPERCLIP])
+
+    first = scorer.score(candidate, RouterSnapshot(reachable=True, context_revision="rev-a"))
+    second = scorer.score(candidate, RouterSnapshot(reachable=True, context_revision="rev-b"))
+
+    assert first.assignment_id == second.assignment_id
+    assert first.decision_id != second.decision_id
+    assert first.idempotency_key == second.idempotency_key
