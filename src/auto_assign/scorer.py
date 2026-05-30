@@ -189,7 +189,7 @@ class AssignmentScorer:
         router: RouterSnapshot,
         canonical_status: str | None,
     ) -> AssignmentDecision:
-        idempotency_key = f"assign.assignment.recommended:{candidate.task_id}:{candidate.status}:{canonical_status or 'unknown'}"
+        idempotency_key = self.decision_idempotency_key(candidate.task_id, candidate.status, canonical_status)
         assignment_id = f"assign_{self._digest(candidate.task_id, canonical_status or 'unknown')[:16]}"
         decision_id = f"decision_{self._digest(idempotency_key, router.context_revision or 'no-router-revision')[:16]}"
         return AssignmentDecision(
@@ -222,6 +222,14 @@ class AssignmentScorer:
             for lane in candidate.allowed_lanes
         ]
         return decision
+
+    def decision_idempotency_key(
+        self,
+        task_id: str,
+        candidate_status: str = "ready",
+        canonical_status: str | None = None,
+    ) -> str:
+        return f"assign.assignment.decision:{task_id}:{candidate_status}:{canonical_status or 'unknown'}"
 
     def _digest(self, *parts: str) -> str:
         joined = "::".join(parts)
