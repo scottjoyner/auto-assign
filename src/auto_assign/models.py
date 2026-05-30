@@ -121,6 +121,19 @@ class AssignmentEvaluateRequest(BaseModel):
     candidate_lanes: list[Lane] = Field(default_factory=lambda: [Lane.PAPERCLIP, Lane.ROUTER_MODEL, Lane.LOCAL_ONLY, Lane.FREE_API])
 
 
+class AssignmentApprovalRequest(BaseModel):
+    approved_by: str = "operator"
+    approval_reason: str = "operator approved dry-run assignment"
+    expires_in_seconds: int = Field(default=900, ge=1, le=86_400)
+    dry_run: bool = True
+
+
+class AssignmentReleaseRequest(BaseModel):
+    reason: str = "operator_release"
+    retryable: bool = True
+    dry_run: bool = True
+
+
 class HeartbeatRequest(BaseModel):
     node_id: str
     worker_id: str | None = None
