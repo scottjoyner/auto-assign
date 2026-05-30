@@ -5,9 +5,11 @@ from uuid import uuid4
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
 from .models import (
+    AssignmentApprovalRequest,
     AssignmentCandidate,
     AssignmentDecision,
     AssignmentEvaluateRequest,
+    AssignmentReleaseRequest,
     AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
@@ -82,6 +84,61 @@ class AssignmentService:
             released_expired=0,
             decisions=decisions,
         )
+
+    async def approve_assignment(self, assignment_id: str, request: AssignmentApprovalRequest) -> dict:
+        assignment = self.cache.get_assignment(assignment_id)
+        if assignment is None:
+            return {"accepted": False, "reason": "assignment_not_found_in_local_cache", "canonical_source": "neo4j_via_assistx"}
+        event = EventEnvelope(
+            event_type="assign.assignment.approved",
+            idempotency_key=f"assign.assignment.approved:{assignment_id}:{request.approved_by}:{request.approval_reason}",
+            subject=assignment.get("task_id", assignment_id),
+            payload={
+                "assignment_id": assignment_id,
+                "task_id": assignment.get("task_id"),
+                "approved_by": request.approved_by,
+                "approval_reason": request.approval_reason,
+                "expires_in_seconds": request.expires_in_seconds,
+                "dry_run": request.dry_run,
+                "cache_role": "outbox_replay_buffer",
+            },
+        )
+        self.cache.enqueue_event(event)
+        return {
+            "accepted": True,
+            "event_id": event.event_id,
+            "idempotency_key": event.idempotency_key,
+            "dry_run": request.dry_run,
+            "canonical_source": "neo4j_via_assistx",
+            "cache_role": "outbox_replay_buffer",
+        }
+
+    async def release_assignment(self, assignment_id: str, request: AssignmentReleaseRequest) -> dict:
+        assignment = self.cache.get_assignment(assignment_id)
+        if assignment is None:
+            return {"accepted": False, "reason": "assignment_not_found_in_local_cache", "canonical_source": "neo4j_via_assistx"}
+        event = EventEnvelope(
+            event_type="assign.assignment.released",
+            idempotency_key=f"assign.assignment.released:{assignment_id}:{request.reason}:{request.retryable}",
+            subject=assignment.get("task_id", assignment_id),
+            payload={
+                "assignment_id": assignment_id,
+                "task_id": assignment.get("task_id"),
+                "reason": request.reason,
+                "retryable": request.retryable,
+                "dry_run": request.dry_run,
+                "cache_role": "outbox_replay_buffer",
+            },
+        )
+        self.cache.enqueue_event(event)
+        return {
+            "accepted": True,
+            "event_id": event.event_id,
+            "idempotency_key": event.idempotency_key,
+            "dry_run": request.dry_run,
+            "canonical_source": "neo4j_via_assistx",
+            "cache_role": "outbox_replay_buffer",
+        }
 
     def record_heartbeat(self, heartbeat: HeartbeatRequest) -> EventEnvelope:
         heartbeat_id = f"heartbeat_{uuid4().hex}"
