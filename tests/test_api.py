@@ -83,6 +83,26 @@ def test_health_reports_brain_and_cache(tmp_path):
     assert payload["cache"]["role"] == "cache_outbox_only"
 
 
+def test_inbound_event_intake_queues_outbox_event(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/events",
+        json={
+            "event_type": "router.quota_snapshot.recorded",
+            "idempotency_key": "router.quota_snapshot.recorded:test",
+            "subject": "auto-router",
+            "payload": {"mode": "test"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["canonical_source"] == "neo4j_via_assistx"
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+
+
 def test_evaluate_assignment_writes_cache_outbox(tmp_path):
     client = make_client(tmp_path)
 
@@ -196,6 +216,18 @@ def test_heartbeat_listing_exposes_local_mirror(tmp_path):
     assert heartbeats["heartbeats"][0]["node_id"] == "node-1"
 
 
+def test_stale_heartbeat_listing_is_read_only_cache_visibility(tmp_path):
+    client = make_client(tmp_path)
+    client.post("/api/heartbeats", json={"node_id": "node-stale", "status": "online"})
+
+    stale = client.get("/api/heartbeats/stale?stale_after_seconds=1").json()
+
+    assert stale["source"] == "sqlite_cache_mirror"
+    assert stale["canonical_source"] == "neo4j_via_assistx"
+    assert stale["stale_after_seconds"] == 1
+    assert stale["count"] == 0
+
+
 def test_outbox_events_listing_exposes_payload_and_status(tmp_path):
     client = make_client(tmp_path)
     create_assignment(client, "ASS-outbox-list")
@@ -220,3 +252,4 @@ def test_ops_summary_reports_cache_state(tmp_path):
     assert summary["assignments_by_status"] == {"recommended": 1}
     assert summary["outbox_by_status"] == {"pending": 2}
     assert summary["heartbeats"]["count"] == 1
+    assert summary["stale_heartbeat_seconds"] > 0
