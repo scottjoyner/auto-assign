@@ -12,11 +12,18 @@ source .venv/bin/activate
 make install
 ```
 
-## 2. Run tests and lint
+## 2. Run the standard validation target
 
 ```bash
-make test
-make lint
+make validate
+```
+
+This runs the same command sequence expected for CI:
+
+```bash
+ruff check src tests
+python -m compileall src
+pytest -q
 ```
 
 Expected result:
@@ -24,7 +31,18 @@ Expected result:
 - scorer tests pass;
 - cache/outbox tests pass;
 - API tests pass;
-- ruff reports no lint failures.
+- client normalization tests pass;
+- assignment event-type tests pass;
+- ruff reports no lint failures;
+- Python compilation succeeds.
+
+You can also run pieces individually:
+
+```bash
+make test
+make lint
+make smoke
+```
 
 ## 3. Start the service locally
 
@@ -84,7 +102,50 @@ Expected:
 }
 ```
 
-## 5. Dry-run outbox dispatch
+## 5. Dry-run inbound trigger processing
+
+Post a task candidate event:
+
+```bash
+curl -X POST http://localhost:8090/api/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event_type": "task.candidate.created",
+    "idempotency_key": "task.candidate.created:ASS-trigger-smoke",
+    "subject": "ASS-trigger-smoke",
+    "payload": {
+      "task_id": "ASS-trigger-smoke"
+    }
+  }' | jq
+```
+
+Process unprocessed inbound events:
+
+```bash
+curl -X POST 'http://localhost:8090/api/events/process?event_type=task.candidate.created&dry_run=true' | jq
+```
+
+Expected behavior:
+
+- the inbound event is mirrored in `inbound_events`;
+- the processor evaluates the task once;
+- a local processing marker is written;
+- an outbound `assign.assignment.recommended`, `assign.assignment.approval_required`, or `assign.assignment.skipped` event is queued;
+- a second call without `include_processed=true` skips the already-processed inbound event.
+
+Check processing history:
+
+```bash
+curl http://localhost:8090/api/events/processing | jq
+```
+
+Explicit replay:
+
+```bash
+curl -X POST 'http://localhost:8090/api/events/process?event_type=task.candidate.created&dry_run=true&include_processed=true' | jq
+```
+
+## 6. Dry-run outbox dispatch
 
 ```bash
 curl -X POST 'http://localhost:8090/api/outbox/dispatch?dry_run=true&limit=25' | jq
@@ -96,7 +157,7 @@ Expected behavior:
 - events remain pending;
 - nothing is written to AssistX/Neo4j.
 
-## 6. Reconcile outbox
+## 7. Reconcile outbox
 
 ```bash
 curl -X POST 'http://localhost:8090/api/outbox/reconcile?limit=100' | jq
@@ -114,7 +175,7 @@ Expected behavior once AssistX supports idempotency lookup:
 - graph conflicts are dead-lettered locally;
 - Neo4j/AssistX state wins over local cache state.
 
-## 7. Docker smoke test
+## 8. Docker smoke test
 
 ```bash
 docker compose up --build
@@ -126,7 +187,49 @@ Then:
 curl http://localhost:8090/health | jq
 ```
 
-## 8. Important validation rules
+## 9. Intended GitHub Actions workflow
+
+The intended CI workflow should run the same commands as `make validate` across Python 3.11 and 3.12.
+
+If the workflow file is not present, create `.github/workflows/ci.yml` with:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and dev dependencies
+        run: python -m pip install -e '.[dev]'
+
+      - name: Validate
+        run: make validate
+```
+
+## 10. Important validation rules
 
 - SQLite is only cache/outbox/replay state.
 - Deleting `data/auto_assign.sqlite3` must not be interpreted as deleting canonical assignment history.
