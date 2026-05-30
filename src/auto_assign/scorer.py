@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from hashlib import sha256
 
 from .models import (
     AssignmentCandidate,
@@ -177,8 +177,10 @@ class AssignmentScorer:
         return targets[lane]
 
     def _quota_preserve_mode(self, router: RouterSnapshot) -> bool:
-        metadata = router.quota.get("metadata", {}) if isinstance(router.quota, dict) else {}
-        mode = metadata.get("mode") or router.quota.get("mode") if isinstance(router.quota, dict) else None
+        if not isinstance(router.quota, dict):
+            return False
+        metadata = router.quota.get("metadata", {})
+        mode = metadata.get("mode") or router.quota.get("mode")
         return mode == "preserve"
 
     def _base_decision(
@@ -187,9 +189,9 @@ class AssignmentScorer:
         router: RouterSnapshot,
         canonical_status: str | None,
     ) -> AssignmentDecision:
-        assignment_id = f"assign_{candidate.task_id}_{uuid4().hex[:8]}"
-        decision_id = f"decision_{candidate.task_id}_{uuid4().hex[:8]}"
         idempotency_key = f"assign.assignment.recommended:{candidate.task_id}:{candidate.status}:{canonical_status or 'unknown'}"
+        assignment_id = f"assign_{self._digest(candidate.task_id, canonical_status or 'unknown')[:16]}"
+        decision_id = f"decision_{self._digest(idempotency_key, router.context_revision or 'no-router-revision')[:16]}"
         return AssignmentDecision(
             assignment_id=assignment_id,
             task_id=candidate.task_id,
@@ -220,3 +222,7 @@ class AssignmentScorer:
             for lane in candidate.allowed_lanes
         ]
         return decision
+
+    def _digest(self, *parts: str) -> str:
+        joined = "::".join(parts)
+        return sha256(joined.encode("utf-8")).hexdigest()
