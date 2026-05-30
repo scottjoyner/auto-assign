@@ -20,6 +20,11 @@ class FakeAssistXClient(AssistXClient):
     async def get_task(self, task_id: str):
         return None
 
+    async def get_backlog_candidates(self, limit: int = 25):
+        from auto_assign.models import AssignmentCandidate
+
+        return [AssignmentCandidate(task_id=f"ASS-{index}") for index in range(min(limit, 2))]
+
     async def event_status(self, idempotency_key: str):
         if idempotency_key in self.applied_keys:
             return {"known": True, "applied": True, "canonical_status": "applied"}
@@ -160,3 +165,58 @@ def test_approve_missing_assignment_returns_404(tmp_path):
     )
 
     assert response.status_code == 404
+
+
+def test_scheduler_tick_records_local_run_summary(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post("/api/scheduler/tick", json={"dry_run": True, "limit": 2})
+    runs = client.get("/api/scheduler/runs").json()
+
+    assert response.status_code == 200
+    assert response.json()["evaluated"] == 2
+    assert runs["source"] == "sqlite_cache_mirror"
+    assert runs["canonical_source"] == "neo4j_via_assistx"
+    assert len(runs["runs"]) == 1
+    assert runs["runs"][0]["evaluated_count"] == 2
+
+
+def test_heartbeat_listing_exposes_local_mirror(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/heartbeats",
+        json={"node_id": "node-1", "worker_id": "worker-1", "status": "online"},
+    )
+    heartbeats = client.get("/api/heartbeats").json()
+
+    assert response.status_code == 200
+    assert heartbeats["source"] == "sqlite_cache_mirror"
+    assert heartbeats["canonical_source"] == "neo4j_via_assistx"
+    assert heartbeats["heartbeats"][0]["node_id"] == "node-1"
+
+
+def test_outbox_events_listing_exposes_payload_and_status(tmp_path):
+    client = make_client(tmp_path)
+    create_assignment(client, "ASS-outbox-list")
+
+    events = client.get("/api/outbox/events").json()
+
+    assert events["source"] == "sqlite_cache_mirror"
+    assert events["canonical_source"] == "neo4j_via_assistx"
+    assert events["events"][0]["status"] == "pending"
+    assert events["events"][0]["payload"]["event_type"] == "assign.assignment.recommended"
+
+
+def test_ops_summary_reports_cache_state(tmp_path):
+    client = make_client(tmp_path)
+    create_assignment(client, "ASS-ops")
+    client.post("/api/heartbeats", json={"node_id": "node-ops", "status": "online"})
+
+    summary = client.get("/api/ops/summary").json()
+
+    assert summary["cache_role"] == "cache_outbox_only"
+    assert summary["canonical_source"] == "neo4j_via_assistx"
+    assert summary["assignments_by_status"] == {"recommended": 1}
+    assert summary["outbox_by_status"] == {"pending": 2}
+    assert summary["heartbeats"]["count"] == 1
