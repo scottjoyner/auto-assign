@@ -33,7 +33,7 @@ flowchart LR
 - scheduler ticks and backlog trigger evaluation;
 - worker/node heartbeat ingestion;
 - assignment scoring and explainable routing recommendations;
-- task lease awareness and stale assignment release;
+- task lease awareness and stale assignment visibility;
 - approval gating before any higher-risk work is dispatched;
 - coordination between AssistX task state and router capability/quota data;
 - idempotent assignment events back to AssistX/Neo4j.
@@ -55,7 +55,7 @@ flowchart LR
 | [`auto-assist`](https://github.com/scottjoyner/auto-assist) | Canonical task, policy, Sophia, Paperclip dispatch, graph authority | Read eligible tasks and policy context; write assignment decisions, lease transitions, trigger outcomes, and heartbeat summaries back as events. |
 | Neo4j | True brain and durable graph memory | Stores task relationships, assignment decisions, policy decisions, heartbeats, leases, router decisions, agent runs, artifacts, and provenance relationships through AssistX. |
 | [`auto-router`](https://github.com/scottjoyner/auto-router) | OpenAI-compatible router, quota manager, service/model/CLI discovery, route provenance | Query route/capability/quota summaries; request dry-run plans for assignment scoring; never bypass privacy/local-only rules. |
-| SQLite cache in `auto-assign` | Local resilience only | Pending outbox events, dedupe keys, transient scheduler summaries, and rebuildable mirrors. Not a system of record. |
+| SQLite cache in `auto-assign` | Local resilience only | Pending outbox events, dedupe keys, transient scheduler summaries, heartbeat mirrors, and rebuildable local views. Not a system of record. |
 | Paperclip / `hermes_local` | Current cutover execution path | Treat as the supported execution lane until direct worker claiming is explicitly promoted. |
 | Future direct workers | Deferred execution lanes | Use only after approval, sandboxing, leases, and write-back contracts are implemented. |
 
@@ -93,21 +93,31 @@ sequenceDiagram
 - [`docs/LLD.md`](docs/LLD.md) — low-level modules, API contracts, event payloads, scoring model, persistence model, and sequence flows.
 - [`docs/NEO4J_BRAIN_AND_CACHE_POLICY.md`](docs/NEO4J_BRAIN_AND_CACHE_POLICY.md) — canonical decision that Neo4j is the true brain and SQLite is only cache/outbox/replay state.
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — prioritized implementation plan for the next cycle.
+- [`docs/LOCAL_VALIDATION.md`](docs/LOCAL_VALIDATION.md) — local smoke-test and dry-run validation guide.
 
-## Proposed API surface
+## API surface
 
 Initial service endpoints should be private-network/Tailscale only:
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Service, dependency, Neo4j/AssistX brain connectivity, router, cache, and scheduler health. |
+| `POST` | `/api/events` | Accept an internal event envelope into the local outbox/replay buffer. |
 | `POST` | `/api/scheduler/tick` | Manually run one assignment evaluation cycle. |
-| `POST` | `/api/events` | Accept AssistX/router events using a signed event envelope. |
-| `POST` | `/api/heartbeats` | Record node/worker heartbeat payloads. |
+| `GET` | `/api/scheduler/runs` | List local scheduler run summaries. |
 | `POST` | `/api/assignments/evaluate` | Evaluate one task or candidate batch without dispatching. |
 | `GET` | `/api/assignments` | List recent local mirror/cache rows with graph reconciliation status. |
+| `GET` | `/api/assignments/{assignment_id}` | Read one local assignment mirror row. |
 | `POST` | `/api/assignments/{assignment_id}/approve` | Approve a gated assignment through AssistX/Neo4j policy flow. |
 | `POST` | `/api/assignments/{assignment_id}/release` | Release an expired or blocked assignment through AssistX/Neo4j event write-back. |
+| `POST` | `/api/heartbeats` | Record node/worker heartbeat payloads. |
+| `GET` | `/api/heartbeats` | List recent local heartbeat mirror rows. |
+| `GET` | `/api/heartbeats/stale` | Read-only view of locally stale heartbeat rows. |
+| `GET` | `/api/outbox/summary` | Summarize local outbox event status counts. |
+| `GET` | `/api/outbox/events` | List local outbox events, optionally filtered by status. |
+| `POST` | `/api/outbox/dispatch` | Dry-run or write pending outbox events to AssistX. |
+| `POST` | `/api/outbox/reconcile` | Reconcile pending events against AssistX/Neo4j idempotency status. |
+| `GET` | `/api/ops/summary` | Compact operator view of cache, outbox, heartbeat, scheduler, and safety status. |
 
 ## First implementation targets
 
