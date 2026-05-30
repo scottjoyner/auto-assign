@@ -337,6 +337,24 @@ def test_outbox_events_listing_exposes_payload_and_status(tmp_path):
     assert events["events"][0]["payload"]["event_type"] == "assign.assignment.recommended"
 
 
+def test_assignment_summary_reports_governor_state(tmp_path):
+    client = make_client(tmp_path)
+    create_assignment(client, "ASS-summary")
+    client.post("/api/heartbeats", json={"node_id": "node-summary", "status": "online"})
+
+    summary = client.get("/api/assignments/summary").json()
+
+    assert summary["cache_role"] == "assignment_governor_read_model"
+    assert summary["canonical_source"] == "neo4j_via_assistx"
+    assert summary["assignments_by_status"] == {"recommended": 1}
+    assert summary["outbox_by_status"] == {"pending": 2}
+    assert summary["heartbeats"]["count"] == 1
+    assert summary["heartbeats"]["stale_count"] == 0
+    assert summary["safety"]["cache_is_canonical"] is False
+    assert any(rec["action"] == "dry_run_only" for rec in summary["recommendations"])
+    assert any(rec["action"] == "direct_workers_disabled" for rec in summary["recommendations"])
+
+
 def test_ops_summary_reports_cache_state(tmp_path):
     client = make_client(tmp_path)
     create_assignment(client, "ASS-ops")
