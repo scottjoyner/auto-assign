@@ -32,7 +32,8 @@ def build_service(settings: Settings | None = None) -> AssignmentService:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.assignment_service = build_service()
+    if not hasattr(app.state, "assignment_service"):
+        app.state.assignment_service = build_service()
     yield
 
 
@@ -85,6 +86,18 @@ async def scheduler_tick(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     return await service.scheduler_tick(request)
+
+
+@app.get("/api/scheduler/runs")
+async def list_scheduler_runs(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "source": "sqlite_cache_mirror",
+        "canonical_source": "neo4j_via_assistx",
+        "runs": service.list_scheduler_runs(limit=limit),
+    }
 
 
 @app.get("/api/assignments")
@@ -153,12 +166,37 @@ async def record_heartbeat(
     }
 
 
+@app.get("/api/heartbeats")
+async def list_heartbeats(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "source": "sqlite_cache_mirror",
+        "canonical_source": "neo4j_via_assistx",
+        "heartbeats": service.list_heartbeats(limit=limit),
+    }
+
+
 @app.get("/api/outbox/summary")
 async def outbox_summary(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
     return {
         "cache_role": "outbox_replay_buffer",
         "canonical_source": "neo4j_via_assistx",
         "summary": service.cache.outbox_summary(),
+    }
+
+
+@app.get("/api/outbox/events")
+async def list_outbox_events(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=50, ge=1, le=500),
+    status: str | None = Query(default=None),
+):
+    return {
+        "source": "sqlite_cache_mirror",
+        "canonical_source": "neo4j_via_assistx",
+        "events": service.list_outbox_events(limit=limit, status=status),
     }
 
 
@@ -177,3 +215,8 @@ async def reconcile_outbox(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     return await service.reconcile_outbox(limit=limit)
+
+
+@app.get("/api/ops/summary")
+async def ops_summary(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
+    return service.ops_summary()
