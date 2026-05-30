@@ -58,6 +58,15 @@ def make_client(tmp_path):
     return TestClient(app)
 
 
+def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
+    response = client.post(
+        "/api/assignments/evaluate",
+        json={"task_id": task_id, "dry_run": True, "candidate_lanes": ["paperclip"]},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_health_reports_brain_and_cache(tmp_path):
     client = make_client(tmp_path)
 
@@ -72,13 +81,8 @@ def test_health_reports_brain_and_cache(tmp_path):
 def test_evaluate_assignment_writes_cache_outbox(tmp_path):
     client = make_client(tmp_path)
 
-    response = client.post(
-        "/api/assignments/evaluate",
-        json={"task_id": "ASS-api", "dry_run": True, "candidate_lanes": ["paperclip"]},
-    )
+    payload = create_assignment(client)
 
-    assert response.status_code == 200
-    payload = response.json()
     assert payload["selected_lane"] == "paperclip"
     assert payload["cache_only"] is True
 
@@ -92,11 +96,8 @@ def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
     app.state.assignment_service = service
     client = TestClient(app)
 
-    response = client.post(
-        "/api/assignments/evaluate",
-        json={"task_id": "ASS-reconcile", "dry_run": True, "candidate_lanes": ["paperclip"]},
-    )
-    key = response.json()["idempotency_key"]
+    payload = create_assignment(client, "ASS-reconcile")
+    key = payload["idempotency_key"]
     service.assistx.applied_keys.add(key)
 
     reconcile = client.post("/api/outbox/reconcile").json()
@@ -107,13 +108,55 @@ def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
 
 def test_outbox_dispatch_dry_run_does_not_mark_delivered(tmp_path):
     client = make_client(tmp_path)
-    client.post(
-        "/api/assignments/evaluate",
-        json={"task_id": "ASS-dry", "dry_run": True, "candidate_lanes": ["paperclip"]},
-    )
+    create_assignment(client, "ASS-dry")
 
     dispatch = client.post("/api/outbox/dispatch?dry_run=true").json()
 
     assert dispatch["dry_run"] is True
     assert dispatch["considered"] == 1
     assert dispatch["summary"] == {"pending": 1}
+
+
+def test_approve_assignment_enqueues_graph_event(tmp_path):
+    client = make_client(tmp_path)
+    assignment = create_assignment(client, "ASS-approve")
+
+    response = client.post(
+        f"/api/assignments/{assignment['assignment_id']}/approve",
+        json={"approved_by": "operator", "approval_reason": "test approval", "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["canonical_source"] == "neo4j_via_assistx"
+    assert payload["cache_role"] == "outbox_replay_buffer"
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 2}
+
+
+def test_release_assignment_enqueues_graph_event(tmp_path):
+    client = make_client(tmp_path)
+    assignment = create_assignment(client, "ASS-release")
+
+    response = client.post(
+        f"/api/assignments/{assignment['assignment_id']}/release",
+        json={"reason": "test_release", "retryable": True, "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["canonical_source"] == "neo4j_via_assistx"
+    assert payload["cache_role"] == "outbox_replay_buffer"
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 2}
+
+
+def test_approve_missing_assignment_returns_404(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/assignments/missing/approve",
+        json={"approved_by": "operator", "approval_reason": "missing"},
+    )
+
+    assert response.status_code == 404
