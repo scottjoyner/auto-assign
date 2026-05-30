@@ -73,9 +73,10 @@ class AssignmentService:
             self.cache.upsert_assignment(decision)
             self.cache.enqueue_event(self._decision_event(decision, dry_run=request.dry_run))
 
+        scheduler_run_id = f"tick_{uuid4().hex[:12]}"
         self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
-        return SchedulerTickResponse(
-            scheduler_run_id=f"tick_{uuid4().hex[:12]}",
+        response = SchedulerTickResponse(
+            scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
             evaluated=len(candidates[: request.limit]),
             recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
@@ -84,6 +85,15 @@ class AssignmentService:
             released_expired=0,
             decisions=decisions,
         )
+        self.cache.record_scheduler_run(
+            scheduler_run_id=scheduler_run_id,
+            trigger_reason=request.reason,
+            dry_run=request.dry_run,
+            evaluated_count=response.evaluated,
+            recommended_count=response.recommended,
+            skipped_count=response.skipped,
+        )
+        return response
 
     async def approve_assignment(self, assignment_id: str, request: AssignmentApprovalRequest) -> dict:
         assignment = self.cache.get_assignment(assignment_id)
@@ -216,6 +226,23 @@ class AssignmentService:
 
     def get_assignment(self, assignment_id: str) -> dict | None:
         return self.cache.get_assignment(assignment_id)
+
+    def list_heartbeats(self, limit: int = 50) -> list[dict]:
+        return self.cache.list_heartbeats(limit=limit)
+
+    def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict]:
+        return self.cache.list_outbox_events(limit=limit, status=status)
+
+    def list_scheduler_runs(self, limit: int = 50) -> list[dict]:
+        return self.cache.list_scheduler_runs(limit=limit)
+
+    def ops_summary(self) -> dict:
+        summary = self.cache.ops_summary()
+        summary["scheduler"]["enabled"] = self.settings.scheduler_enabled
+        summary["scheduler"]["last_tick_at"] = self.last_tick_at
+        summary["dispatch_enabled"] = self.settings.dispatch_enabled
+        summary["direct_workers_enabled"] = self.settings.direct_workers_enabled
+        return summary
 
     def _decision_event(self, decision: AssignmentDecision, dry_run: bool) -> EventEnvelope:
         event_type = "assign.assignment.skipped" if decision.selected_lane == Lane.BLOCKED else "assign.assignment.recommended"
