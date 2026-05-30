@@ -38,6 +38,54 @@ def test_outbox_idempotency_key_dedupes_events(tmp_path):
     assert cache.outbox_summary() == {"pending": 1}
 
 
+def test_outbox_refreshes_pending_event_payload_for_same_idempotency_key(tmp_path):
+    cache = CacheStore(tmp_path / "cache.sqlite3")
+    first = EventEnvelope(
+        event_type="assign.assignment.recommended",
+        idempotency_key="refresh-key",
+        subject="ASS-1",
+        payload={"version": 1},
+    )
+    second = EventEnvelope(
+        event_type="assign.assignment.recommended",
+        idempotency_key="refresh-key",
+        subject="ASS-1",
+        payload={"version": 2},
+    )
+
+    cache.enqueue_event(first)
+    cache.enqueue_event(second)
+
+    events = cache.list_outbox_events()
+    assert len(events) == 1
+    assert events[0]["payload"]["payload"]["version"] == 2
+
+
+def test_outbox_does_not_rewrite_delivered_event_payload(tmp_path):
+    cache = CacheStore(tmp_path / "cache.sqlite3")
+    first = EventEnvelope(
+        event_type="assign.assignment.recommended",
+        idempotency_key="delivered-key",
+        subject="ASS-1",
+        payload={"version": 1},
+    )
+    second = EventEnvelope(
+        event_type="assign.assignment.recommended",
+        idempotency_key="delivered-key",
+        subject="ASS-1",
+        payload={"version": 2},
+    )
+
+    cache.enqueue_event(first)
+    cache.mark_event_delivered("delivered-key")
+    cache.enqueue_event(second)
+
+    events = cache.list_outbox_events()
+    assert len(events) == 1
+    assert events[0]["status"] == "delivered"
+    assert events[0]["payload"]["payload"]["version"] == 1
+
+
 def test_cache_file_deletion_does_not_define_canonical_history(tmp_path):
     path = tmp_path / "cache.sqlite3"
     cache = CacheStore(path)
