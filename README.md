@@ -55,7 +55,7 @@ flowchart LR
 | [`auto-assist`](https://github.com/scottjoyner/auto-assist) | Canonical task, policy, Sophia, Paperclip dispatch, graph authority | Read eligible tasks and policy context; write assignment decisions, lease transitions, trigger outcomes, and heartbeat summaries back as events. |
 | Neo4j | True brain and durable graph memory | Stores task relationships, assignment decisions, policy decisions, heartbeats, leases, router decisions, agent runs, artifacts, and provenance relationships through AssistX. |
 | [`auto-router`](https://github.com/scottjoyner/auto-router) | OpenAI-compatible router, quota manager, service/model/CLI discovery, route provenance | Query route/capability/quota summaries; request dry-run plans for assignment scoring; never bypass privacy/local-only rules. |
-| SQLite cache in `auto-assign` | Local resilience only | Pending outbox events, dedupe keys, transient scheduler summaries, heartbeat mirrors, and rebuildable local views. Not a system of record. |
+| SQLite cache in `auto-assign` | Local resilience only | Pending outbox events, dedupe keys, transient scheduler summaries, inbound event mirrors, inbound processing state, heartbeat mirrors, and rebuildable local views. Not a system of record. |
 | Paperclip / `hermes_local` | Current cutover execution path | Treat as the supported execution lane until direct worker claiming is explicitly promoted. |
 | Future direct workers | Deferred execution lanes | Use only after approval, sandboxing, leases, and write-back contracts are implemented. |
 
@@ -71,11 +71,14 @@ sequenceDiagram
     participant W as worker lane
 
     AX->>AA: task candidate / scheduler tick / event
+    AA->>C: cache inbound event mirror
+    AA->>AA: explicitly process unprocessed inbound event
     AA->>AX: load task + policy + approval context
     AX->>N: read canonical graph state
     AA->>AR: load node/provider/quota/capability snapshot
     AA->>AA: score lane, risk, privacy, age, retry, capability
     AA->>C: cache pending assign.* event for retry/idempotency
+    AA->>C: mark inbound event processing result
     AA->>AX: write assignment recommendation + reasons
     AX->>N: persist canonical assignment graph
     alt approval required
@@ -102,7 +105,10 @@ Initial service endpoints should be private-network/Tailscale only:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Service, dependency, Neo4j/AssistX brain connectivity, router, cache, and scheduler health. |
-| `POST` | `/api/events` | Accept an internal event envelope into the local outbox/replay buffer. |
+| `POST` | `/api/events` | Accept an internal event envelope into the local inbound-event mirror. Does not add to outbound outbox. |
+| `GET` | `/api/events` | List local inbound event mirror rows, optionally filtered by event type. |
+| `POST` | `/api/events/process` | Explicitly process unprocessed inbound events. Defaults to dry-run and skips already processed events unless `include_processed=true`. |
+| `GET` | `/api/events/processing` | List local inbound processing history and last action per idempotency key. |
 | `POST` | `/api/scheduler/tick` | Manually run one assignment evaluation cycle. |
 | `GET` | `/api/scheduler/runs` | List local scheduler run summaries. |
 | `POST` | `/api/assignments/evaluate` | Evaluate one task or candidate batch without dispatching. |
@@ -117,7 +123,26 @@ Initial service endpoints should be private-network/Tailscale only:
 | `GET` | `/api/outbox/events` | List local outbox events, optionally filtered by status. |
 | `POST` | `/api/outbox/dispatch` | Dry-run or write pending outbox events to AssistX. |
 | `POST` | `/api/outbox/reconcile` | Reconcile pending events against AssistX/Neo4j idempotency status. |
-| `GET` | `/api/ops/summary` | Compact operator view of cache, outbox, heartbeat, scheduler, and safety status. |
+| `GET` | `/api/ops/summary` | Compact operator view of cache, outbox, heartbeat, scheduler, inbound event, processing, and safety status. |
+
+## Inbound trigger processing
+
+Inbound events are cached separately from outbound `assign.*` events. This prevents `auto-assign` from echoing router or AssistX events back to AssistX as if it authored them.
+
+Current inbound processors:
+
+| Inbound event type | Processing action |
+|---|---|
+| `task.candidate.created` | Evaluates the task and queues an outbound `assign.assignment.recommended` or `assign.assignment.skipped` event. |
+| `router.quota_snapshot.recorded` | Runs a dry-run scheduler tick. |
+| `router.service_snapshot.recorded` | Runs a dry-run scheduler tick. |
+| Unknown event type | Records an ignored processing action. |
+
+Processing is protected by `inbound_event_processing.idempotency_key`. By default, once an inbound event is processed, later processor calls skip it. Explicit replay requires:
+
+```bash
+curl -X POST 'http://localhost:8090/api/events/process?include_processed=true&dry_run=true'
+```
 
 ## First implementation targets
 
