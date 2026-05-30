@@ -175,6 +175,80 @@ class AssignmentService:
             "cache_role": "received_event_mirror",
         }
 
+    async def process_inbound_events(
+        self,
+        event_type: str | None = None,
+        dry_run: bool = True,
+        limit: int = 25,
+    ) -> dict:
+        events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
+        actions: list[dict] = []
+        for event_row in events:
+            event = event_row["payload"]
+            event_name = event.get("event_type")
+            payload = event.get("payload", {}) or {}
+            subject = event.get("subject")
+            if event_name == "task.candidate.created":
+                task_id = payload.get("task_id") or subject
+                if task_id:
+                    decision = await self.evaluate(
+                        AssignmentEvaluateRequest(task_id=task_id, dry_run=dry_run)
+                    )
+                    actions.append(
+                        {
+                            "event_id": event.get("event_id"),
+                            "event_type": event_name,
+                            "action": "assignment_evaluated",
+                            "task_id": task_id,
+                            "assignment_id": decision.assignment_id,
+                            "selected_lane": decision.selected_lane.value,
+                            "dry_run": dry_run,
+                        }
+                    )
+                else:
+                    actions.append(
+                        {
+                            "event_id": event.get("event_id"),
+                            "event_type": event_name,
+                            "action": "skipped",
+                            "reason": "missing_task_id",
+                        }
+                    )
+            elif event_name in {"router.quota_snapshot.recorded", "router.service_snapshot.recorded"}:
+                tick = await self.scheduler_tick(
+                    SchedulerTickRequest(
+                        dry_run=dry_run,
+                        limit=limit,
+                        reason=f"inbound_event:{event_name}",
+                    )
+                )
+                actions.append(
+                    {
+                        "event_id": event.get("event_id"),
+                        "event_type": event_name,
+                        "action": "scheduler_tick",
+                        "scheduler_run_id": tick.scheduler_run_id,
+                        "evaluated": tick.evaluated,
+                        "dry_run": dry_run,
+                    }
+                )
+            else:
+                actions.append(
+                    {
+                        "event_id": event.get("event_id"),
+                        "event_type": event_name,
+                        "action": "ignored",
+                        "reason": "no_processor_registered",
+                    }
+                )
+        return {
+            "processed": len(events),
+            "actions": actions,
+            "dry_run": dry_run,
+            "source": "sqlite_inbound_event_cache",
+            "canonical_source": "neo4j_via_assistx",
+        }
+
     async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
         events = self.cache.pending_events(limit=limit)
         delivered = 0
