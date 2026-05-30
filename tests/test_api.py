@@ -9,6 +9,11 @@ from auto_assign.settings import Settings
 
 
 class FakeAssistXClient(AssistXClient):
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        self.applied_keys: set[str] = set()
+        self.delivered_keys: set[str] = set()
+
     async def health(self):
         return {"reachable": True, "brain": "neo4j_via_assistx"}
 
@@ -16,7 +21,15 @@ class FakeAssistXClient(AssistXClient):
         return None
 
     async def event_status(self, idempotency_key: str):
+        if idempotency_key in self.applied_keys:
+            return {"known": True, "applied": True, "canonical_status": "applied"}
         return {"known": False}
+
+    async def post_event(self, event, dry_run: bool = True):
+        if dry_run:
+            return {"delivered": False, "dry_run": True}
+        self.delivered_keys.add(event.idempotency_key)
+        return {"delivered": True, "status_code": 202}
 
 
 class FakeRouterClient(RouterClient):
@@ -29,16 +42,19 @@ class FakeRouterClient(RouterClient):
         return RouterSnapshot(reachable=True, context_revision="test-rev")
 
 
-def make_client(tmp_path):
+def make_service(tmp_path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}")
-    service = AssignmentService(
+    return AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
         assistx=FakeAssistXClient(settings),
         router=FakeRouterClient(settings),
         scorer=AssignmentScorer(settings),
     )
-    app.state.assignment_service = service
+
+
+def make_client(tmp_path):
+    app.state.assignment_service = make_service(tmp_path)
     return TestClient(app)
 
 
@@ -69,3 +85,35 @@ def test_evaluate_assignment_writes_cache_outbox(tmp_path):
     outbox = client.get("/api/outbox/summary").json()
     assert outbox["canonical_source"] == "neo4j_via_assistx"
     assert outbox["summary"] == {"pending": 1}
+
+
+def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
+    service = make_service(tmp_path)
+    app.state.assignment_service = service
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/assignments/evaluate",
+        json={"task_id": "ASS-reconcile", "dry_run": True, "candidate_lanes": ["paperclip"]},
+    )
+    key = response.json()["idempotency_key"]
+    service.assistx.applied_keys.add(key)
+
+    reconcile = client.post("/api/outbox/reconcile").json()
+
+    assert reconcile["reconciled_delivered"] == 1
+    assert reconcile["summary"] == {"delivered": 1}
+
+
+def test_outbox_dispatch_dry_run_does_not_mark_delivered(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/assignments/evaluate",
+        json={"task_id": "ASS-dry", "dry_run": True, "candidate_lanes": ["paperclip"]},
+    )
+
+    dispatch = client.post("/api/outbox/dispatch?dry_run=true").json()
+
+    assert dispatch["dry_run"] is True
+    assert dispatch["considered"] == 1
+    assert dispatch["summary"] == {"pending": 1}
