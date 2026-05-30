@@ -111,13 +111,8 @@ class CacheStore:
             with self.connect() as conn:
                 conn.execute("SELECT 1").fetchone()
             return {"reachable": True, "path": str(self.path), "role": "cache_outbox_only"}
-        except Exception as exc:  # pragma: no cover - defensive health path
-            return {
-                "reachable": False,
-                "path": str(self.path),
-                "error": str(exc),
-                "role": "cache_outbox_only",
-            }
+        except Exception as exc:  # pragma: no cover
+            return {"reachable": False, "path": str(self.path), "error": str(exc), "role": "cache_outbox_only"}
 
     def record_scheduler_run(
         self,
@@ -180,6 +175,7 @@ class CacheStore:
                     payload_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(idempotency_key) DO UPDATE SET
+                    decision_id=excluded.decision_id,
                     status=excluded.status,
                     selected_lane=excluded.selected_lane,
                     selected_target=excluded.selected_target,
@@ -332,6 +328,12 @@ class CacheStore:
         return {row["event_type"]: int(row["count"]) for row in rows}
 
     def enqueue_event(self, event: EventEnvelope) -> None:
+        """Queue or refresh an outbound event.
+
+        Pending/failed events with the same idempotency key are refreshed with the
+        latest payload. Delivered/dead-letter events are not changed by normal
+        enqueue calls, so canonical write-back history is not silently rewritten.
+        """
         now = utc_now().isoformat()
         with self.connect() as conn:
             conn.execute(
@@ -340,7 +342,13 @@ class CacheStore:
                     event_id, event_type, idempotency_key, subject, payload_json,
                     status, attempts, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-                ON CONFLICT(idempotency_key) DO NOTHING
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    event_id=excluded.event_id,
+                    event_type=excluded.event_type,
+                    subject=excluded.subject,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                WHERE outbox_events.status IN ('pending', 'failed')
                 """,
                 (
                     event.event_id,
