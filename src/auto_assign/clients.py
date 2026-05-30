@@ -25,11 +25,11 @@ class AssistXClient:
         url = f"{self.base_url}/api/router/backlog-candidates"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, params={"limit": limit})
+                response = await client.get(url, params={"limit": limit, "queue": "backlog", "dry_run": "true"})
             response.raise_for_status()
             payload = response.json()
-            items = payload.get("candidates", payload if isinstance(payload, list) else [])
-            return [AssignmentCandidate.model_validate(item) for item in items]
+            items = self._extract_items(payload)
+            return [self._candidate_from_item(item) for item in items]
         except Exception:
             return []
 
@@ -39,7 +39,7 @@ class AssistXClient:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.get(f"{self.base_url}{path}")
                 if response.is_success:
-                    return AssignmentCandidate.model_validate(response.json())
+                    return self._candidate_from_item(response.json())
             except Exception:
                 continue
         return None
@@ -63,7 +63,39 @@ class AssistXClient:
         url = f"{self.base_url}/api/events"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(url, json=event.model_dump(mode="json"))
-        return {"delivered": response.is_success, "status_code": response.status_code}
+        return {"delivered": response.is_success or response.status_code == 409, "status_code": response.status_code}
+
+    def _extract_items(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        for key in ("tasks", "candidates", "items", "results", "backlog"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _candidate_from_item(self, item: dict[str, Any]) -> AssignmentCandidate:
+        raw = dict(item)
+        if "task_id" not in raw:
+            raw["task_id"] = raw.get("id") or raw.get("uuid") or raw.get("title") or "unknown-task"
+        privacy = str(raw.get("privacy") or raw.get("privacy_label") or "").lower()
+        labels = set(str(label).lower() for label in raw.get("privacy_labels") or [])
+        if privacy:
+            labels.add(privacy)
+        metadata = raw.get("metadata") or {}
+        if isinstance(metadata, dict):
+            meta_privacy = str(metadata.get("privacy") or "").lower()
+            if meta_privacy:
+                labels.add(meta_privacy)
+        sensitive_labels = {"local_only", "private", "private_data", "secret", "secrets", "voice_auth", "enrollment", "enrollment_sample"}
+        raw["privacy_labels"] = sorted(labels)
+        raw["local_only"] = bool(raw.get("local_only") or privacy in {"local_only", "private", "secret"})
+        raw["sensitive"] = bool(raw.get("sensitive") or bool(labels & sensitive_labels))
+        raw["allow_cloud"] = bool(raw.get("allow_cloud", not raw["local_only"])) and not raw["local_only"]
+        raw.setdefault("summary", raw.get("title") or raw.get("prompt"))
+        return AssignmentCandidate.model_validate(raw)
 
 
 class RouterClient:
@@ -87,6 +119,7 @@ class RouterClient:
                 quota_response = await client.get(f"{self.base_url}/admin/quota")
                 circuits_response = await client.get(f"{self.base_url}/admin/circuits")
                 clis_response = await client.get(f"{self.base_url}/admin/agent-clis")
+                ops_response = await client.get(f"{self.base_url}/admin/ops/summary")
 
             context = context_response.json() if context_response.is_success else {}
             snapshot.reachable = context_response.is_success
@@ -98,6 +131,7 @@ class RouterClient:
             snapshot.circuits = circuits_response.json() if circuits_response.is_success else {}
             cli_payload = clis_response.json() if clis_response.is_success else {}
             snapshot.agent_clis = cli_payload.get("agents", cli_payload.get("agent_clis", [])) if isinstance(cli_payload, dict) else []
+            snapshot.ops_summary = ops_response.json() if ops_response.is_success else {}
         except Exception:
             # Conservative fallback: no cloud/free lanes should be selected based on a stale router.
             snapshot.reachable = False
