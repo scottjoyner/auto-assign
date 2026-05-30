@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 
+from .events import EventType
 from .models import (
     AssignmentCandidate,
     AssignmentDecision,
@@ -271,7 +272,7 @@ class AssignmentScorer:
         candidate_status: str = "ready",
         canonical_status: str | None = None,
     ) -> str:
-        return f"assign.assignment.decision:{task_id}:{candidate_status}:{canonical_status or 'unknown'}"
+        return f"{EventType.ASSIGNMENT_DECISION}:{task_id}:{candidate_status}:{canonical_status or 'unknown'}"
 
     def _digest(self, *parts: str) -> str:
         joined = "::".join(parts)
