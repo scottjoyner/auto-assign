@@ -122,7 +122,7 @@ class AssignmentService:
 
         router_snapshot = await self.router.snapshot()
         status = await self.assistx.event_status(
-            f"assign.assignment.recommended:{candidate.task_id}:{candidate.status}:unknown"
+            self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
         )
         canonical_status = status.get("canonical_status") if status.get("known") else None
         decision = self.scorer.score(candidate, router_snapshot, request.candidate_lanes, canonical_status)
@@ -141,7 +141,7 @@ class AssignmentService:
         decisions: list[AssignmentDecision] = []
         for candidate in candidates[: request.limit]:
             status = await self.assistx.event_status(
-                f"assign.assignment.recommended:{candidate.task_id}:{candidate.status}:unknown"
+                self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
             )
             canonical_status = status.get("canonical_status") if status.get("known") else None
             decision = self.scorer.score(candidate, router_snapshot, canonical_status=canonical_status)
