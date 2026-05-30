@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from .cache import CacheStore
@@ -16,6 +17,7 @@ from .models import (
     Lane,
     SchedulerTickRequest,
     SchedulerTickResponse,
+    utc_now,
 )
 from .scorer import AssignmentScorer
 from .settings import Settings
@@ -36,6 +38,80 @@ class AssignmentService:
         self.router = router
         self.scorer = scorer
         self.last_tick_at: str | None = None
+        self._init_inbound_processing_schema()
+
+    def _init_inbound_processing_schema(self) -> None:
+        with self.cache.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inbound_event_processing (
+                    idempotency_key TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    action_json TEXT NOT NULL,
+                    processed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_inbound_event_processing_status
+                ON inbound_event_processing(status)
+                """
+            )
+
+    def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
+        with self.cache.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM inbound_event_processing WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return row is not None
+
+    def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
+        now = utc_now().isoformat()
+        status = action.get("action", "processed")
+        with self.cache.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO inbound_event_processing (
+                    idempotency_key, event_id, event_type, status, action_json,
+                    processed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    event_id=excluded.event_id,
+                    event_type=excluded.event_type,
+                    status=excluded.status,
+                    action_json=excluded.action_json,
+                    processed_at=excluded.processed_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    event.get("idempotency_key"),
+                    event.get("event_id"),
+                    event.get("event_type"),
+                    status,
+                    json.dumps(action, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+
+    def list_inbound_processing(self, limit: int = 50) -> list[dict]:
+        with self.cache.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT idempotency_key, event_id, event_type, status, action_json,
+                       processed_at, updated_at
+                FROM inbound_event_processing
+                ORDER BY processed_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [{**dict(row), "action": json.loads(row["action_json"])} for row in rows]
 
     async def evaluate(self, request: AssignmentEvaluateRequest) -> AssignmentDecision:
         candidate = await self.assistx.get_task(request.task_id)
@@ -180,11 +256,16 @@ class AssignmentService:
         event_type: str | None = None,
         dry_run: bool = True,
         limit: int = 25,
+        include_processed: bool = False,
     ) -> dict:
         events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
         actions: list[dict] = []
+        skipped_already_processed = 0
         for event_row in events:
             event = event_row["payload"]
+            if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
+                skipped_already_processed += 1
+                continue
             event_name = event.get("event_type")
             payload = event.get("payload", {}) or {}
             subject = event.get("subject")
@@ -194,26 +275,22 @@ class AssignmentService:
                     decision = await self.evaluate(
                         AssignmentEvaluateRequest(task_id=task_id, dry_run=dry_run)
                     )
-                    actions.append(
-                        {
-                            "event_id": event.get("event_id"),
-                            "event_type": event_name,
-                            "action": "assignment_evaluated",
-                            "task_id": task_id,
-                            "assignment_id": decision.assignment_id,
-                            "selected_lane": decision.selected_lane.value,
-                            "dry_run": dry_run,
-                        }
-                    )
+                    action = {
+                        "event_id": event.get("event_id"),
+                        "event_type": event_name,
+                        "action": "assignment_evaluated",
+                        "task_id": task_id,
+                        "assignment_id": decision.assignment_id,
+                        "selected_lane": decision.selected_lane.value,
+                        "dry_run": dry_run,
+                    }
                 else:
-                    actions.append(
-                        {
-                            "event_id": event.get("event_id"),
-                            "event_type": event_name,
-                            "action": "skipped",
-                            "reason": "missing_task_id",
-                        }
-                    )
+                    action = {
+                        "event_id": event.get("event_id"),
+                        "event_type": event_name,
+                        "action": "skipped",
+                        "reason": "missing_task_id",
+                    }
             elif event_name in {"router.quota_snapshot.recorded", "router.service_snapshot.recorded"}:
                 tick = await self.scheduler_tick(
                     SchedulerTickRequest(
@@ -222,27 +299,26 @@ class AssignmentService:
                         reason=f"inbound_event:{event_name}",
                     )
                 )
-                actions.append(
-                    {
-                        "event_id": event.get("event_id"),
-                        "event_type": event_name,
-                        "action": "scheduler_tick",
-                        "scheduler_run_id": tick.scheduler_run_id,
-                        "evaluated": tick.evaluated,
-                        "dry_run": dry_run,
-                    }
-                )
+                action = {
+                    "event_id": event.get("event_id"),
+                    "event_type": event_name,
+                    "action": "scheduler_tick",
+                    "scheduler_run_id": tick.scheduler_run_id,
+                    "evaluated": tick.evaluated,
+                    "dry_run": dry_run,
+                }
             else:
-                actions.append(
-                    {
-                        "event_id": event.get("event_id"),
-                        "event_type": event_name,
-                        "action": "ignored",
-                        "reason": "no_processor_registered",
-                    }
-                )
+                action = {
+                    "event_id": event.get("event_id"),
+                    "event_type": event_name,
+                    "action": "ignored",
+                    "reason": "no_processor_registered",
+                }
+            self._mark_inbound_event_processed(event, action)
+            actions.append(action)
         return {
-            "processed": len(events),
+            "processed": len(actions),
+            "skipped_already_processed": skipped_already_processed,
             "actions": actions,
             "dry_run": dry_run,
             "source": "sqlite_inbound_event_cache",
@@ -331,6 +407,9 @@ class AssignmentService:
     def list_inbound_events(self, limit: int = 50, event_type: str | None = None) -> list[dict]:
         return self.cache.list_inbound_events(limit=limit, event_type=event_type)
 
+    def list_inbound_processing(self, limit: int = 50) -> list[dict]:
+        return self.list_inbound_processing(limit=limit)
+
     def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict]:
         return self.cache.list_outbox_events(limit=limit, status=status)
 
@@ -344,6 +423,7 @@ class AssignmentService:
         summary["dispatch_enabled"] = self.settings.dispatch_enabled
         summary["direct_workers_enabled"] = self.settings.direct_workers_enabled
         summary["stale_heartbeat_seconds"] = self.settings.stale_heartbeat_seconds
+        summary["inbound_processing"] = self.list_inbound_processing(limit=10)
         return summary
 
     def _decision_event(self, decision: AssignmentDecision, dry_run: bool) -> EventEnvelope:
