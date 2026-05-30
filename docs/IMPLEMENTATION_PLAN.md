@@ -6,13 +6,15 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 
 ## Guiding constraints
 
-- AssistX remains canonical task-state authority.
+- Neo4j, reached through AssistX, is the true brain and durable source of truth.
+- SQLite in `auto-assign` is cache/outbox/replay-buffer state only and must be safe to delete/rebuild.
+- AssistX remains canonical task-state, policy, and graph-write authority.
 - Paperclip / `hermes_local` remains the current supported execution lane until direct workers are promoted.
 - auto-router remains the model/provider/quota routing authority.
 - auto-assign is an assignment governor, not an executor.
 - Every decision must have machine-readable and human-readable reasons.
-- Every write-back event must be idempotent.
-- Dispatch, direct worker execution, repo mutation, commit, push, and external side effects are disabled by default.
+- Every meaningful assignment fact must be emitted as an idempotent event for Neo4j materialization.
+- Dispatch, direct worker execution, repo mutation, commit, push, and other external side effects are disabled by default.
 
 ## P0 - Documentation and repo bootstrap
 
@@ -20,8 +22,9 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 
 - [x] Add README with purpose, boundaries, integrations, safety defaults, and proposed API surface.
 - [x] Add HLD with system context, lifecycle, trigger/heartbeat model, event architecture, and risks.
-- [x] Add LLD with module layout, API contracts, persistence, scoring, and event payloads.
-- [ ] Add `.env.example` with AssistX/router/service/store settings.
+- [x] Add LLD with module layout, API contracts, persistence/cache model, scoring, and event payloads.
+- [x] Add Neo4j brain and SQLite cache policy.
+- [ ] Add `.env.example` with AssistX/router/service/cache settings.
 - [ ] Add `pyproject.toml` for FastAPI, Pydantic, HTTPX, pytest, and ruff.
 - [ ] Add initial package layout under `src/auto_assign`.
 - [ ] Add `Makefile` with `install`, `dev`, `test`, `lint`, and `smoke` targets.
@@ -29,22 +32,23 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 ### P0.2 Create service shell
 
 - [ ] Implement `auto_assign.main:app`.
-- [ ] Implement `GET /health`.
+- [ ] Implement `GET /health` with AssistX/Neo4j brain connectivity, router connectivity, and cache/outbox health.
 - [ ] Implement settings loader.
-- [ ] Implement SQLite connection/bootstrap.
+- [ ] Implement SQLite cache/outbox bootstrap.
 - [ ] Add Dockerfile and docker-compose profile after local dev works.
 
-### P0.3 Add local persistence
+### P0.3 Add local cache/outbox layer
 
-- [ ] Create SQLite migrations or bootstrap DDL for:
-  - `scheduler_runs`;
-  - `assignments`;
-  - `assignment_reasons`;
-  - `heartbeats`;
-  - `outbox_events`.
-- [ ] Add repository/store layer.
+- [ ] Create SQLite migrations or bootstrap DDL for cache/outbox tables only:
+  - `scheduler_runs` as a local summary cache;
+  - `assignments` as a local mirror of pending/recent assignment decisions;
+  - `assignment_reasons` as local mirrored explainability rows;
+  - `heartbeats` as local recent heartbeat cache;
+  - `outbox_events` as the durable retry/replay buffer for Neo4j write-back.
+- [ ] Add repository/cache layer with names that make cache semantics explicit.
 - [ ] Add idempotency unique constraints.
-- [ ] Add local DB smoke test.
+- [ ] Add local cache smoke test.
+- [ ] Add test proving deleting SQLite cache does not define or erase canonical history.
 
 ## P1 - Dry-run assignment engine
 
@@ -53,9 +57,11 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 - [ ] Implement `AssistXClient.health()`.
 - [ ] Implement `AssistXClient.get_backlog_candidates(limit)`.
 - [ ] Implement `AssistXClient.get_task(task_id)` if AssistX exposes it.
+- [ ] Implement `AssistXClient.get_event_status(idempotency_key)` or equivalent once available.
 - [ ] Implement `AssistXClient.post_event(event)`.
 - [ ] Add retry/backoff for transient failures.
-- [ ] Add dry-run mode that writes only to local outbox.
+- [ ] Add dry-run mode that writes only to local outbox/cache and does not mutate execution lanes.
+- [ ] Add graph-state reconciliation helper where AssistX/Neo4j state wins conflicts.
 
 ### P1.2 auto-router client
 
@@ -70,8 +76,8 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 ### P1.3 Assignment scorer
 
 - [ ] Implement hard gates:
-  - terminal task;
-  - duplicate active assignment;
+  - terminal task according to AssistX/Neo4j;
+  - duplicate active assignment according to AssistX/Neo4j or local pending outbox;
   - local-only/privacy cloud denial;
   - approval required;
   - lane disabled;
@@ -89,13 +95,14 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
   - retry fit.
 - [ ] Emit selected lane, score, reasons, and skipped lane reasons.
 - [ ] Add deterministic unit tests for each lane category.
+- [ ] Add test proving Neo4j/AssistX conflict state overrides local cache rows.
 
 ### P1.4 API dry-run flows
 
 - [ ] Implement `POST /api/assignments/evaluate`.
 - [ ] Implement `POST /api/scheduler/tick`.
-- [ ] Implement `GET /api/assignments`.
-- [ ] Implement `GET /api/assignments/{assignment_id}`.
+- [ ] Implement `GET /api/assignments` as a local mirror view with graph reconciliation status.
+- [ ] Implement `GET /api/assignments/{assignment_id}` as a local mirror view with canonical AssistX/Neo4j status where available.
 - [ ] Ensure `dry_run=true` never dispatches.
 - [ ] Emit local outbox events for recommended/skipped decisions.
 
@@ -105,26 +112,28 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 
 - [ ] Implement `POST /api/heartbeats`.
 - [ ] Validate node/worker identifiers.
-- [ ] Store heartbeat payload with secret redaction.
+- [ ] Store heartbeat payload in local recent-heartbeat cache with secret redaction.
 - [ ] Link heartbeat to active assignment when provided.
-- [ ] Emit `assign.worker.heartbeat.recorded` events.
+- [ ] Emit `assign.worker.heartbeat.recorded` events for Neo4j materialization.
 
 ### P2.2 Lease lifecycle
 
-- [ ] Implement reserve/lease state transition.
+- [ ] Implement reserve/lease state transition as an event proposal, not SQLite-only truth.
 - [ ] Implement lease expiration scan during scheduler tick.
 - [ ] Implement `POST /api/assignments/{assignment_id}/release`.
 - [ ] Emit `assign.assignment.released` with retryable/terminal classification.
 - [ ] Add tests for stale heartbeat and expired lease release.
+- [ ] Add test proving lease terminal state from Neo4j blocks local stale retry.
 
 ### P2.3 Approval lifecycle
 
 - [ ] Implement `POST /api/assignments/{assignment_id}/approve`.
-- [ ] Require approval for high-risk, unknown-speaker, non-Scott, repo-write, production, financial, legal, or external side-effect tasks.
+- [ ] Require approval for high-risk, unknown-speaker, non-Scott, repo-write, production-changing, or other side-effecting tasks.
 - [ ] Emit `assign.assignment.approval_required` and approval events.
 - [ ] Do not dispatch when approval is required and absent.
+- [ ] Ensure approval state is read from AssistX/Neo4j before dispatch.
 
-## P3 - AssistX event write-back and dashboard readiness
+## P3 - AssistX event write-back and graph readiness
 
 ### P3.1 Outbox dispatcher
 
@@ -133,6 +142,7 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 - [ ] Implement retry with max attempts and next-attempt timestamp.
 - [ ] Add idempotency key generation per event type.
 - [ ] Add tests for duplicate event prevention.
+- [ ] Add startup reconciliation: pending local outbox events are checked against AssistX/Neo4j by idempotency key before retry.
 
 ### P3.2 AssistX graph alignment
 
@@ -143,16 +153,19 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
   - `AssignmentReason`;
   - `WorkerHeartbeat`;
   - relationships to `Task`, `AgentRun`, `SwarmNode`, `RouterDecision`.
-- [ ] Add docs for graph model after AssistX event sink is verified.
+- [ ] Add graph schema docs after AssistX event sink is verified.
+- [ ] Add reconciliation rules for local cache vs Neo4j conflicts.
 
 ### P3.3 Operator visibility
 
 - [ ] Add basic JSON dashboard summary endpoint:
   - recent scheduler runs;
-  - active assignments;
+  - active local mirror rows;
+  - canonical graph reconciliation status;
   - blocked reasons;
   - stale heartbeats;
-  - outbox status.
+  - outbox status;
+  - Neo4j write-back lag.
 - [ ] Add Prometheus-style `/metrics` after core counters stabilize.
 
 ## P4 - Controlled dispatch integration
@@ -162,7 +175,7 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 - [ ] Add Paperclip lane adapter only after dry-run scoring and leases are tested.
 - [ ] Ensure AssistX remains owner of Paperclip dispatch state.
 - [ ] Use assignment events to explain why Paperclip was selected, not to bypass AssistX.
-- [ ] Validate duplicate-dispatch prevention against AssistX terminal state and existing dispatch refs.
+- [ ] Validate duplicate-dispatch prevention against AssistX/Neo4j terminal state and existing dispatch refs.
 
 ### P4.2 Router model lane
 
@@ -184,7 +197,7 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 
 - [ ] Add signed event verification.
 - [ ] Add auth for admin endpoints.
-- [ ] Redact secrets in all logs and DB payloads.
+- [ ] Redact secrets in all logs and cache payloads.
 - [ ] Add private-network deployment guidance.
 - [ ] Add threat model document.
 
@@ -194,7 +207,7 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 - [ ] Add circuit breaker for repeated dependency failures.
 - [ ] Add scheduled background loop with jitter.
 - [ ] Add graceful shutdown.
-- [ ] Add DB backup guidance.
+- [ ] Add cache/outbox backup guidance only for operational convenience; Neo4j backup remains the canonical disaster-recovery path.
 
 ### P5.3 CI and quality
 
@@ -210,19 +223,22 @@ Use this after the docs are merged:
 ```text
 Implement the P0/P1 dry-run MVP for auto-assign.
 
-Build a FastAPI service under src/auto_assign with settings, health endpoint, SQLite store, outbox, AssistX client, auto-router client, scheduler tick, assignment evaluation, and deterministic scorer. Keep dispatch disabled by default. Implement only dry-run assignment recommendations and skipped-lane reasons. Add tests proving local-only privacy gates, approval-required gates, duplicate active assignment prevention, router-unavailable conservative fallback, and idempotent outbox events.
+Build a FastAPI service under src/auto_assign with settings, health endpoint, SQLite cache/outbox, AssistX client, auto-router client, scheduler tick, assignment evaluation, deterministic scorer, and startup reconciliation. Keep dispatch disabled by default. Implement only dry-run assignment recommendations and skipped-lane reasons. Add tests proving local-only privacy gates, approval-required gates, duplicate active assignment prevention, router-unavailable conservative fallback, idempotent outbox events, SQLite cache deletion safety, and Neo4j/AssistX conflict precedence.
 
-Do not implement repo mutation, direct worker execution, or cloud dispatch. Do not persist raw prompts, response bodies, secrets, voiceprints, or enrollment samples.
+Do not implement repo mutation, direct worker execution, or cloud dispatch. Do not persist raw prompts, response bodies, secrets, voiceprints, or enrollment samples. Do not treat SQLite as the source of truth; Neo4j via AssistX is the durable brain.
 ```
 
 ## Acceptance checklist for next cycle
 
 - [ ] `make test` passes.
-- [ ] `GET /health` works with mocked/unavailable dependencies.
+- [ ] `GET /health` works with mocked/unavailable dependencies and reports AssistX/Neo4j brain connectivity.
 - [ ] `POST /api/assignments/evaluate` returns deterministic score/reasons.
 - [ ] `POST /api/scheduler/tick` dry-runs candidate batches.
 - [ ] Local-only/private tasks never select cloud/free API lanes.
 - [ ] Approval-required tasks never dispatch.
-- [ ] Duplicate active assignment is prevented.
+- [ ] Duplicate active assignment is prevented using AssistX/Neo4j state plus local pending events.
 - [ ] Outbox stores idempotent `assign.*` events.
-- [ ] README/HLD/LLD remain aligned with implemented API.
+- [ ] Startup reconciliation marks already-applied outbox events delivered.
+- [ ] SQLite cache deletion does not erase canonical assignment history.
+- [ ] Neo4j/AssistX state wins over local cache conflicts.
+- [ ] README/HLD/LLD/cache policy remain aligned with implemented API.
