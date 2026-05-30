@@ -94,16 +94,30 @@ async def list_inbound_events(
     }
 
 
+@app.get("/api/events/processing")
+async def list_inbound_processing(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "source": "sqlite_inbound_processing_cache",
+        "canonical_source": "neo4j_via_assistx",
+        "processing": service.list_inbound_processing(limit=limit),
+    }
+
+
 @app.post("/api/events/process")
 async def process_inbound_events(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
     event_type: str | None = Query(default=None),
     dry_run: bool = Query(default=True),
+    include_processed: bool = Query(default=False),
     limit: int = Query(default=25, ge=1, le=500),
 ):
     return await service.process_inbound_events(
         event_type=event_type,
         dry_run=dry_run,
+        include_processed=include_processed,
         limit=limit,
     )
 
