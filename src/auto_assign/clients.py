@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -160,7 +161,19 @@ class AssistXClient:
 
 
 class RouterClient:
-    """Client for auto-router model/service/quota context snapshots."""
+    """Client for auto-router model/service/quota context snapshots.
+
+    Expected auto-router endpoints:
+    - GET /health
+    - GET /admin/context
+    - GET /admin/quota
+    - GET /admin/circuits
+    - GET /admin/agent-clis
+    - GET /admin/ops/summary
+
+    If context cannot be loaded, the snapshot is marked unreachable so hosted and
+    router lanes are conservatively blocked by the scorer.
+    """
 
     def __init__(self, settings: Settings):
         self.base_url = settings.router_base_url.rstrip("/")
@@ -184,17 +197,75 @@ class RouterClient:
                 clis_response = await client.get(f"{self.base_url}/admin/agent-clis")
                 ops_response = await client.get(f"{self.base_url}/admin/ops/summary")
 
-            context = context_response.json() if context_response.is_success else {}
-            snapshot.reachable = context_response.is_success
-            snapshot.context_revision = context.get("revision") or context.get("context_revision")
-            snapshot.nodes = context.get("nodes", [])
-            snapshot.providers = context.get("providers", [])
-            snapshot.services = context.get("services", [])
-            snapshot.quota = quota_response.json() if quota_response.is_success else {}
-            snapshot.circuits = circuits_response.json() if circuits_response.is_success else {}
-            cli_payload = clis_response.json() if clis_response.is_success else {}
-            snapshot.agent_clis = cli_payload.get("agents", cli_payload.get("agent_clis", [])) if isinstance(cli_payload, dict) else []
-            snapshot.ops_summary = ops_response.json() if ops_response.is_success else {}
+            self._apply_snapshot_payloads(
+                snapshot=snapshot,
+                context_payload=context_response.json() if context_response.is_success else {},
+                quota_payload=quota_response.json() if quota_response.is_success else {},
+                circuits_payload=circuits_response.json() if circuits_response.is_success else {},
+                clis_payload=clis_response.json() if clis_response.is_success else {},
+                ops_payload=ops_response.json() if ops_response.is_success else {},
+                reachable=context_response.is_success,
+            )
         except Exception:
             snapshot.reachable = False
         return snapshot
+
+    def _apply_snapshot_payloads(
+        self,
+        snapshot: RouterSnapshot,
+        context_payload: Any,
+        quota_payload: Any,
+        circuits_payload: Any,
+        clis_payload: Any,
+        ops_payload: Any,
+        reachable: bool = True,
+    ) -> RouterSnapshot:
+        context = self._unwrap_context(context_payload)
+        snapshot.reachable = bool(reachable and context)
+        snapshot.context_revision = self._context_revision(context)
+        snapshot.nodes = self._payload_list(context, ("nodes", "workers", "worker_nodes", "hosts"))
+        snapshot.providers = self._payload_list(context, ("providers", "models", "model_providers"))
+        snapshot.services = self._payload_list(context, ("services", "endpoints", "routes"))
+        snapshot.quota = self._payload_object(quota_payload)
+        snapshot.circuits = self._payload_object(circuits_payload)
+        snapshot.agent_clis = self._payload_list(clis_payload, ("agents", "agent_clis", "clis", "items", "results"))
+        snapshot.ops_summary = self._payload_object(ops_payload)
+        return snapshot
+
+    def _unwrap_context(self, payload: Any) -> dict[str, Any]:
+        obj = self._payload_object(payload)
+        for key in ("context", "snapshot", "router_context", "data"):
+            nested = obj.get(key)
+            if isinstance(nested, Mapping):
+                return dict(nested)
+        return obj
+
+    def _context_revision(self, context: dict[str, Any]) -> str | None:
+        metadata = context.get("metadata") if isinstance(context.get("metadata"), Mapping) else {}
+        return (
+            context.get("revision")
+            or context.get("context_revision")
+            or context.get("version")
+            or metadata.get("revision")
+            or metadata.get("context_revision")
+        )
+
+    def _payload_object(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, Mapping):
+            return dict(payload)
+        return {}
+
+    def _payload_list(self, payload: Any, keys: Sequence[str]) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, Mapping):
+            return []
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, Mapping):
+                nested = self._payload_list(value, ("items", "results", "data", "nodes", "services"))
+                if nested:
+                    return nested
+        return []
