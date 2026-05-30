@@ -174,7 +174,11 @@ class AssignmentService:
     async def approve_assignment(self, assignment_id: str, request: AssignmentApprovalRequest) -> dict:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
-            return {"accepted": False, "reason": "assignment_not_found_in_local_cache", "canonical_source": "neo4j_via_assistx"}
+            return {
+                "accepted": False,
+                "reason": "assignment_not_found_in_local_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         event = EventEnvelope(
             event_type="assign.assignment.approved",
             idempotency_key=f"assign.assignment.approved:{assignment_id}:{request.approved_by}:{request.approval_reason}",
@@ -202,7 +206,11 @@ class AssignmentService:
     async def release_assignment(self, assignment_id: str, request: AssignmentReleaseRequest) -> dict:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
-            return {"accepted": False, "reason": "assignment_not_found_in_local_cache", "canonical_source": "neo4j_via_assistx"}
+            return {
+                "accepted": False,
+                "reason": "assignment_not_found_in_local_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         event = EventEnvelope(
             event_type="assign.assignment.released",
             idempotency_key=f"assign.assignment.released:{assignment_id}:{request.reason}:{request.retryable}",
@@ -424,7 +432,12 @@ class AssignmentService:
         return summary
 
     def _decision_event(self, decision: AssignmentDecision, dry_run: bool) -> EventEnvelope:
-        event_type = "assign.assignment.skipped" if decision.selected_lane == Lane.BLOCKED else "assign.assignment.recommended"
+        if decision.status == AssignmentStatus.APPROVAL_REQUIRED:
+            event_type = "assign.assignment.approval_required"
+        elif decision.status == AssignmentStatus.RECOMMENDED:
+            event_type = "assign.assignment.recommended"
+        else:
+            event_type = "assign.assignment.skipped"
         return EventEnvelope(
             event_type=event_type,
             idempotency_key=decision.idempotency_key,
