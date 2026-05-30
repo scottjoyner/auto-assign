@@ -47,3 +47,69 @@ def test_candidate_normalization_keeps_safe_cloud_allowed() -> None:
     assert candidate.local_only is False
     assert candidate.sensitive is False
     assert candidate.allow_cloud is True
+
+
+def test_candidate_from_item_accepts_string_privacy_labels() -> None:
+    client = AssistXClient(Settings())
+
+    candidate = client._candidate_from_item(
+        {
+            "id": "ASS-string-labels",
+            "privacy_labels": "local_only,voice_auth",
+            "allow_cloud": "true",
+        }
+    )
+
+    assert candidate.task_id == "ASS-string-labels"
+    assert candidate.local_only is True
+    assert candidate.sensitive is True
+    assert candidate.allow_cloud is False
+    assert set(candidate.privacy_labels) >= {"local_only", "voice_auth"}
+
+
+def test_candidate_from_item_preserves_false_string_booleans() -> None:
+    client = AssistXClient(Settings())
+
+    candidate = client._candidate_from_item(
+        {
+            "task_id": "ASS-false-strings",
+            "local_only": "false",
+            "sensitive": "false",
+            "allow_cloud": "false",
+        }
+    )
+
+    assert candidate.local_only is False
+    assert candidate.sensitive is False
+    assert candidate.allow_cloud is False
+
+
+def test_candidate_from_item_infers_privacy_from_metadata() -> None:
+    client = AssistXClient(Settings())
+
+    candidate = client._candidate_from_item(
+        {
+            "uuid": "ASS-metadata-privacy",
+            "metadata": {"privacy": "secret"},
+        }
+    )
+
+    assert candidate.task_id == "ASS-metadata-privacy"
+    assert candidate.local_only is True
+    assert candidate.sensitive is True
+    assert candidate.allow_cloud is False
+    assert "secret" in candidate.privacy_labels
+
+
+def test_candidate_from_item_supports_semicolon_privacy_labels() -> None:
+    client = AssistXClient(Settings())
+
+    candidate = client._candidate_from_item(
+        {
+            "task_id": "ASS-semicolon",
+            "privacy_labels": "private_data;enrollment_sample",
+        }
+    )
+
+    assert candidate.sensitive is True
+    assert set(candidate.privacy_labels) >= {"private_data", "enrollment_sample"}
