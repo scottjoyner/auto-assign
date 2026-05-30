@@ -8,6 +8,7 @@ from .models import (
     AssignmentCandidate,
     AssignmentDecision,
     AssignmentEvaluateRequest,
+    AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
     Lane,
@@ -75,9 +76,9 @@ class AssignmentService:
             scheduler_run_id=f"tick_{uuid4().hex[:12]}",
             dry_run=request.dry_run,
             evaluated=len(candidates[: request.limit]),
-            recommended=sum(1 for d in decisions if d.status == "recommended"),
-            approval_required=sum(1 for d in decisions if d.status == "approval_required"),
-            skipped=sum(1 for d in decisions if d.status == "blocked"),
+            recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
+            approval_required=sum(1 for d in decisions if d.status == AssignmentStatus.APPROVAL_REQUIRED),
+            skipped=sum(1 for d in decisions if d.status == AssignmentStatus.BLOCKED),
             released_expired=0,
             decisions=decisions,
         )
@@ -93,6 +94,65 @@ class AssignmentService:
         )
         self.cache.enqueue_event(event)
         return event
+
+    async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
+        events = self.cache.pending_events(limit=limit)
+        delivered = 0
+        failed = 0
+        dry_run_events = []
+        for event in events:
+            status = await self.assistx.event_status(event.idempotency_key)
+            if status.get("known") and status.get("applied", True):
+                self.cache.mark_event_delivered(event.idempotency_key)
+                delivered += 1
+                continue
+            if dry_run:
+                dry_run_events.append(event.model_dump(mode="json"))
+                continue
+            try:
+                result = await self.assistx.post_event(event, dry_run=False)
+                if result.get("delivered"):
+                    self.cache.mark_event_delivered(event.idempotency_key)
+                    delivered += 1
+                else:
+                    self.cache.mark_event_failed(
+                        event.idempotency_key,
+                        f"AssistX returned {result.get('status_code', 'unknown')}",
+                    )
+                    failed += 1
+            except Exception as exc:
+                self.cache.mark_event_failed(event.idempotency_key, str(exc))
+                failed += 1
+        return {
+            "dry_run": dry_run,
+            "considered": len(events),
+            "delivered": delivered,
+            "failed": failed,
+            "dry_run_events": dry_run_events,
+            "summary": self.cache.outbox_summary(),
+            "canonical_source": "neo4j_via_assistx",
+        }
+
+    async def reconcile_outbox(self, limit: int = 100) -> dict:
+        events = self.cache.pending_events(limit=limit)
+        delivered_keys: list[str] = []
+        conflicts: list[dict] = []
+        for event in events:
+            status = await self.assistx.event_status(event.idempotency_key)
+            if status.get("known") and status.get("applied", True):
+                delivered_keys.append(event.idempotency_key)
+            elif status.get("known") and status.get("conflict"):
+                self.cache.mark_event_failed(event.idempotency_key, "canonical graph conflict", dead_letter=True)
+                conflicts.append({"idempotency_key": event.idempotency_key, "status": status})
+        reconciled = self.cache.reconcile_delivered(delivered_keys)
+        return {
+            "checked": len(events),
+            "reconciled_delivered": reconciled,
+            "conflicts_dead_lettered": len(conflicts),
+            "conflicts": conflicts,
+            "summary": self.cache.outbox_summary(),
+            "canonical_source": "neo4j_via_assistx",
+        }
 
     def list_assignments(self, limit: int = 50) -> list[dict]:
         return self.cache.list_assignments(limit=limit)
