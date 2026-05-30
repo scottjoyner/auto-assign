@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from .models import AssignmentDecision, EventEnvelope, HeartbeatRequest, utc_now
+
+
+class CacheStore:
+    """SQLite cache/outbox layer.
+
+    This is intentionally not a source of truth. Neo4j via AssistX is the durable
+    brain. Rows here are local mirrors, retry buffers, and operational cache only.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_schema(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS scheduler_runs (
+                    scheduler_run_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    trigger_reason TEXT NOT NULL,
+                    dry_run INTEGER NOT NULL,
+                    evaluated_count INTEGER NOT NULL DEFAULT 0,
+                    recommended_count INTEGER NOT NULL DEFAULT 0,
+                    skipped_count INTEGER NOT NULL DEFAULT 0,
+                    error_summary TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS assignments (
+                    assignment_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    decision_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    selected_lane TEXT NOT NULL,
+                    selected_target TEXT,
+                    score REAL NOT NULL,
+                    approval_required INTEGER NOT NULL,
+                    lease_expires_at TEXT,
+                    context_revision TEXT,
+                    canonical_status TEXT,
+                    cache_only INTEGER NOT NULL DEFAULT 1,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_assignments_task_id ON assignments(task_id);
+                CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
+
+                CREATE TABLE IF NOT EXISTS heartbeats (
+                    heartbeat_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL,
+                    worker_id TEXT,
+                    assignment_id TEXT,
+                    status TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_heartbeats_node_id ON heartbeats(node_id);
+                CREATE INDEX IF NOT EXISTS idx_heartbeats_assignment_id ON heartbeats(assignment_id);
+
+                CREATE TABLE IF NOT EXISTS outbox_events (
+                    event_id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    subject TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_events(status);
+                """
+            )
+
+    def health(self) -> dict[str, Any]:
+        try:
+            with self.connect() as conn:
+                conn.execute("SELECT 1").fetchone()
+            return {"reachable": True, "path": str(self.path), "role": "cache_outbox_only"}
+        except Exception as exc:  # pragma: no cover - defensive health path
+            return {"reachable": False, "path": str(self.path), "error": str(exc), "role": "cache_outbox_only"}
+
+    def upsert_assignment(self, decision: AssignmentDecision) -> None:
+        now = utc_now().isoformat()
+        payload = decision.model_dump(mode="json")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO assignments (
+                    assignment_id, task_id, decision_id, status, selected_lane,
+                    selected_target, score, approval_required, lease_expires_at,
+                    context_revision, canonical_status, cache_only, idempotency_key,
+                    payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    status=excluded.status,
+                    selected_lane=excluded.selected_lane,
+                    selected_target=excluded.selected_target,
+                    score=excluded.score,
+                    approval_required=excluded.approval_required,
+                    lease_expires_at=excluded.lease_expires_at,
+                    context_revision=excluded.context_revision,
+                    canonical_status=excluded.canonical_status,
+                    cache_only=excluded.cache_only,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    decision.assignment_id,
+                    decision.task_id,
+                    decision.decision_id,
+                    decision.status.value,
+                    decision.selected_lane.value,
+                    decision.selected_target,
+                    decision.score,
+                    int(decision.approval_required),
+                    decision.lease_expires_at.isoformat() if decision.lease_expires_at else None,
+                    decision.context_revision,
+                    decision.canonical_status,
+                    int(decision.cache_only),
+                    decision.idempotency_key,
+                    json.dumps(payload, sort_keys=True),
+                    decision.created_at.isoformat(),
+                    now,
+                ),
+            )
+
+    def list_assignments(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM assignments ORDER BY updated_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def get_assignment(self, assignment_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM assignments WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def record_heartbeat(self, heartbeat_id: str, heartbeat: HeartbeatRequest) -> None:
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO heartbeats (
+                    heartbeat_id, node_id, worker_id, assignment_id, status,
+                    received_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    heartbeat_id,
+                    heartbeat.node_id,
+                    heartbeat.worker_id,
+                    heartbeat.assignment_id,
+                    heartbeat.status,
+                    now,
+                    heartbeat.model_dump_json(),
+                ),
+            )
+
+    def enqueue_event(self, event: EventEnvelope) -> None:
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO outbox_events (
+                    event_id, event_type, idempotency_key, subject, payload_json,
+                    status, attempts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    event.event_id,
+                    event.event_type,
+                    event.idempotency_key,
+                    event.subject,
+                    event.model_dump_json(),
+                    now,
+                    now,
+                ),
+            )
+
+    def outbox_summary(self) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM outbox_events GROUP BY status"
+            ).fetchall()
+        return {row["status"]: int(row["count"]) for row in rows}
