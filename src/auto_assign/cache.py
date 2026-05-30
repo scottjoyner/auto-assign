@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,22 @@ class CacheStore:
                 LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
+    def list_stale_heartbeats(self, stale_after_seconds: int, limit: int = 50) -> list[dict[str, Any]]:
+        cutoff = (utc_now() - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT heartbeat_id, node_id, worker_id, assignment_id, status,
+                       received_at, payload_json
+                FROM heartbeats
+                WHERE received_at < ?
+                ORDER BY received_at ASC
+                LIMIT ?
+                """,
+                (cutoff, limit),
             ).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
