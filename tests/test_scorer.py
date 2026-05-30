@@ -85,3 +85,24 @@ def test_decision_id_changes_when_router_context_revision_changes():
     assert first.assignment_id == second.assignment_id
     assert first.decision_id != second.decision_id
     assert first.idempotency_key == second.idempotency_key
+
+
+def test_decision_idempotency_key_is_status_neutral_for_recommended_decision():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(task_id="ASS-key", allowed_lanes=[Lane.PAPERCLIP])
+
+    decision = scorer.score(candidate, RouterSnapshot(reachable=True))
+
+    assert decision.status == AssignmentStatus.RECOMMENDED
+    assert decision.idempotency_key == "assign.assignment.decision:ASS-key:ready:unknown"
+
+
+def test_decision_idempotency_key_is_status_neutral_for_blocked_decision():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(task_id="ASS-block-key", allowed_lanes=[Lane.FREE_API])
+
+    decision = scorer.score(candidate, RouterSnapshot(reachable=False))
+
+    assert decision.status == AssignmentStatus.BLOCKED
+    assert decision.idempotency_key == "assign.assignment.decision:ASS-block-key:ready:unknown"
+    assert "recommended" not in decision.idempotency_key
