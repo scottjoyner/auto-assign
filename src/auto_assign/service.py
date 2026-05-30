@@ -163,15 +163,16 @@ class AssignmentService:
         return event
 
     def ingest_event(self, event: EventEnvelope) -> dict:
-        self.cache.enqueue_event(event)
+        self.cache.record_inbound_event(event)
         return {
             "accepted": True,
             "event_id": event.event_id,
             "event_type": event.event_type,
             "idempotency_key": event.idempotency_key,
             "subject": event.subject,
+            "source": "sqlite_inbound_event_cache",
             "canonical_source": "neo4j_via_assistx",
-            "cache_role": "outbox_replay_buffer",
+            "cache_role": "received_event_mirror",
         }
 
     async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
@@ -252,6 +253,9 @@ class AssignmentService:
             "count": len(stale),
             "heartbeats": stale,
         }
+
+    def list_inbound_events(self, limit: int = 50, event_type: str | None = None) -> list[dict]:
+        return self.cache.list_inbound_events(limit=limit, event_type=event_type)
 
     def list_outbox_events(self, limit: int = 50, status: str | None = None) -> list[dict]:
         return self.cache.list_outbox_events(limit=limit, status=status)
