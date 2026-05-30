@@ -94,6 +94,8 @@ sequenceDiagram
 
 - [`docs/HLD.md`](docs/HLD.md) — high-level architecture, system context, trigger/heartbeat role, and integration boundaries.
 - [`docs/LLD.md`](docs/LLD.md) — low-level modules, API contracts, event payloads, scoring model, persistence model, and sequence flows.
+- [`docs/EVENT_CONTRACTS.md`](docs/EVENT_CONTRACTS.md) — event envelope, inbound/outbound event names, idempotency keys, and processing-state rules.
+- [`docs/INTEGRATION_CONTRACTS.md`](docs/INTEGRATION_CONTRACTS.md) — AssistX and auto-router endpoints, normalization rules, and degraded-mode behavior.
 - [`docs/NEO4J_BRAIN_AND_CACHE_POLICY.md`](docs/NEO4J_BRAIN_AND_CACHE_POLICY.md) — canonical decision that Neo4j is the true brain and SQLite is only cache/outbox/replay state.
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — prioritized implementation plan for the next cycle.
 - [`docs/LOCAL_VALIDATION.md`](docs/LOCAL_VALIDATION.md) — local smoke-test and dry-run validation guide.
@@ -133,7 +135,7 @@ Current inbound processors:
 
 | Inbound event type | Processing action |
 |---|---|
-| `task.candidate.created` | Evaluates the task and queues an outbound `assign.assignment.recommended` or `assign.assignment.skipped` event. |
+| `task.candidate.created` | Evaluates the task and queues an outbound `assign.assignment.recommended`, `assign.assignment.approval_required`, or `assign.assignment.skipped` event. |
 | `router.quota_snapshot.recorded` | Runs a dry-run scheduler tick. |
 | `router.service_snapshot.recorded` | Runs a dry-run scheduler tick. |
 | Unknown event type | Records an ignored processing action. |
