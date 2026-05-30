@@ -130,6 +130,52 @@ def test_process_task_candidate_event_triggers_dry_run_assignment(tmp_path):
     assert payload["actions"][0]["task_id"] == "ASS-trigger"
     assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
 
+    processing = client.get("/api/events/processing").json()
+    assert processing["source"] == "sqlite_inbound_processing_cache"
+    assert processing["processing"][0]["status"] == "assignment_evaluated"
+
+
+def test_processed_inbound_event_is_not_reprocessed_by_default(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/events",
+        json={
+            "event_type": "task.candidate.created",
+            "idempotency_key": "task.candidate.created:ASS-once",
+            "subject": "ASS-once",
+            "payload": {"task_id": "ASS-once"},
+        },
+    )
+
+    first = client.post("/api/events/process?event_type=task.candidate.created&dry_run=true").json()
+    second = client.post("/api/events/process?event_type=task.candidate.created&dry_run=true").json()
+
+    assert first["processed"] == 1
+    assert second["processed"] == 0
+    assert second["skipped_already_processed"] == 1
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+
+
+def test_processed_inbound_event_can_be_replayed_explicitly(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/events",
+        json={
+            "event_type": "task.candidate.created",
+            "idempotency_key": "task.candidate.created:ASS-replay",
+            "subject": "ASS-replay",
+            "payload": {"task_id": "ASS-replay"},
+        },
+    )
+
+    client.post("/api/events/process?event_type=task.candidate.created&dry_run=true")
+    replay = client.post(
+        "/api/events/process?event_type=task.candidate.created&dry_run=true&include_processed=true"
+    ).json()
+
+    assert replay["processed"] == 1
+    assert replay["actions"][0]["action"] == "assignment_evaluated"
+
 
 def test_process_router_snapshot_event_triggers_scheduler_tick(tmp_path):
     client = make_client(tmp_path)
@@ -314,3 +360,4 @@ def test_ops_summary_reports_cache_state(tmp_path):
     assert summary["inbound_events"]["count"] == 1
     assert summary["heartbeats"]["count"] == 1
     assert summary["stale_heartbeat_seconds"] > 0
+    assert isinstance(summary["inbound_processing"], list)
