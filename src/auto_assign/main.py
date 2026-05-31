@@ -8,8 +8,10 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from . import __version__
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
+from .control import AssignmentControlStore
 from .models import (
     AssignmentApprovalRequest,
+    AssignmentControlRequest,
     AssignmentEvaluateRequest,
     AssignmentReleaseRequest,
     EventEnvelope,
@@ -50,11 +52,16 @@ def get_assignment_service() -> AssignmentService:
     return app.state.assignment_service
 
 
+def get_assignment_control(service: AssignmentService) -> AssignmentControlStore:
+    return AssignmentControlStore(service.settings.sqlite_path)
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
     assistx = await service.assistx.health()
     router = await service.router.health()
     cache = service.cache.health()
+    control = get_assignment_control(service).get()
     status = "ok" if cache.get("reachable") else "degraded"
     if not assistx.get("reachable"):
         status = "degraded"
@@ -69,8 +76,31 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
             "last_tick_at": service.last_tick_at,
             "dispatch_enabled": service.settings.dispatch_enabled,
             "direct_workers_enabled": service.settings.direct_workers_enabled,
+            "control": control,
         },
     )
+
+
+@app.get("/api/assignment-control")
+async def read_assignment_control(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
+    return get_assignment_control(service).get()
+
+
+@app.post("/api/assignment-control")
+async def set_assignment_control(
+    request: AssignmentControlRequest,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    state, event = get_assignment_control(service).set(request)
+    service.cache.enqueue_event(event)
+    return {
+        **state,
+        "event_id": event.event_id,
+        "idempotency_key": event.idempotency_key,
+        "dry_run": request.dry_run,
+        "cache_role": "assignment_control_cache_and_outbox",
+        "canonical_source": "neo4j_via_assistx",
+    }
 
 
 @app.post("/api/events")
@@ -170,16 +200,19 @@ async def assignment_summary(
     ops = service.ops_summary()
     stale = service.list_stale_heartbeats(limit=limit)
     recent_assignments = service.list_assignments(limit=limit)
+    control = get_assignment_control(service).get()
     recommendations = _assignment_summary_recommendations(
         ops=ops,
         stale_count=stale.get("count", 0),
         dispatch_enabled=service.settings.dispatch_enabled,
         direct_workers_enabled=service.settings.direct_workers_enabled,
+        control=control,
     )
     return {
         "source": "sqlite_cache_mirror",
         "canonical_source": "neo4j_via_assistx",
         "cache_role": "assignment_governor_read_model",
+        "control": control,
         "assignments_by_status": ops.get("assignments_by_status", {}),
         "outbox_by_status": ops.get("outbox_by_status", {}),
         "inbound_by_type": ops.get("inbound_by_type", {}),
@@ -194,6 +227,9 @@ async def assignment_summary(
             "direct_workers_enabled": service.settings.direct_workers_enabled,
             "cache_is_canonical": False,
             "canonical_source": "neo4j_via_assistx",
+            "control_mode": control.get("mode"),
+            "assignment_allowed": control.get("assignment_allowed"),
+            "scheduler_ticks_allowed": control.get("scheduler_ticks_allowed"),
         },
         "recent_assignments": recent_assignments,
         "stale_heartbeats": stale.get("heartbeats", []),
@@ -206,13 +242,32 @@ def _assignment_summary_recommendations(
     stale_count: int,
     dispatch_enabled: bool,
     direct_workers_enabled: bool,
+    control: dict | None = None,
 ) -> list[dict]:
     recommendations: list[dict] = []
     outbox = ops.get("outbox_by_status", {}) or {}
     assignments = ops.get("assignments_by_status", {}) or {}
+    control = control or {"mode": "enabled", "new_assignments_allowed": True, "scheduler_ticks_allowed": True}
+    mode = control.get("mode") or "enabled"
     pending = int(outbox.get("pending", 0))
     failed = int(outbox.get("failed", 0))
     dead_letter = int(outbox.get("dead_letter", 0))
+    if mode in {"paused", "maintenance"}:
+        recommendations.append(
+            {
+                "level": "warning",
+                "action": "keep_assignment_governor_paused",
+                "reason": f"assignment control is {mode}; new assignment decisions and scheduler ticks should pause",
+            }
+        )
+    elif mode == "draining":
+        recommendations.append(
+            {
+                "level": "warning",
+                "action": "drain_assignment_governor",
+                "reason": "assignment control is draining; finish/reconcile existing work and avoid new recommendations",
+            }
+        )
     if pending:
         recommendations.append(
             {
@@ -266,7 +321,7 @@ def _assignment_summary_recommendations(
             {
                 "level": "info",
                 "action": "steady_state",
-                "reason": "no local cache/outbox/heartbeat risks detected",
+                "reason": "no local cache/outbox/heartbeat/control risks detected",
             }
         )
     return recommendations
@@ -388,4 +443,6 @@ async def reconcile_outbox(
 
 @app.get("/api/ops/summary")
 async def ops_summary(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
-    return service.ops_summary()
+    ops = service.ops_summary()
+    ops["control"] = get_assignment_control(service).get()
+    return ops
