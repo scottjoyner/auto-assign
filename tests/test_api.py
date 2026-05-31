@@ -72,7 +72,7 @@ def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
     return response.json()
 
 
-def test_health_reports_brain_and_cache(tmp_path):
+def test_health_reports_brain_cache_and_control(tmp_path):
     client = make_client(tmp_path)
 
     response = client.get("/health")
@@ -81,6 +81,38 @@ def test_health_reports_brain_and_cache(tmp_path):
     payload = response.json()
     assert payload["assistx"]["brain"] == "neo4j_via_assistx"
     assert payload["cache"]["role"] == "cache_outbox_only"
+    assert payload["scheduler"]["control"]["mode"] == "enabled"
+    assert payload["scheduler"]["control"]["new_assignments_allowed"] is True
+
+
+def test_assignment_control_defaults_and_updates(tmp_path):
+    client = make_client(tmp_path)
+
+    default_state = client.get("/api/assignment-control").json()
+    assert default_state["mode"] == "enabled"
+    assert default_state["new_assignments_allowed"] is True
+
+    updated = client.post(
+        "/api/assignment-control",
+        json={
+            "mode": "draining",
+            "reason": "operator drain before interactive work",
+            "updated_by": "operator",
+            "dry_run": True,
+        },
+    ).json()
+
+    assert updated["mode"] == "draining"
+    assert updated["new_assignments_allowed"] is False
+    assert updated["lease_renewals_allowed"] is True
+    assert updated["cache_role"] == "assignment_control_cache_and_outbox"
+    assert updated["canonical_source"] == "neo4j_via_assistx"
+    assert updated["event_id"].startswith("evt_")
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+
+    read_back = client.get("/api/assignment-control").json()
+    assert read_back["mode"] == "draining"
+    assert read_back["reason"] == "operator drain before interactive work"
 
 
 def test_inbound_event_intake_records_inbound_cache_only(tmp_path):
@@ -346,13 +378,43 @@ def test_assignment_summary_reports_governor_state(tmp_path):
 
     assert summary["cache_role"] == "assignment_governor_read_model"
     assert summary["canonical_source"] == "neo4j_via_assistx"
+    assert summary["control"]["mode"] == "enabled"
     assert summary["assignments_by_status"] == {"recommended": 1}
     assert summary["outbox_by_status"] == {"pending": 2}
     assert summary["heartbeats"]["count"] == 1
     assert summary["heartbeats"]["stale_count"] == 0
     assert summary["safety"]["cache_is_canonical"] is False
+    assert summary["safety"]["control_mode"] == "enabled"
     assert any(rec["action"] == "dry_run_only" for rec in summary["recommendations"])
     assert any(rec["action"] == "direct_workers_disabled" for rec in summary["recommendations"])
+
+
+def test_assignment_summary_respects_paused_control(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/assignment-control",
+        json={"mode": "paused", "reason": "pause for interactive work", "updated_by": "operator"},
+    )
+
+    summary = client.get("/api/assignments/summary").json()
+
+    assert summary["control"]["mode"] == "paused"
+    assert summary["safety"]["assignment_allowed"] is False
+    assert any(rec["action"] == "keep_assignment_governor_paused" for rec in summary["recommendations"])
+
+
+def test_assignment_summary_respects_draining_control(tmp_path):
+    client = make_client(tmp_path)
+    client.post(
+        "/api/assignment-control",
+        json={"mode": "draining", "reason": "finish safe checkpoints", "updated_by": "operator"},
+    )
+
+    summary = client.get("/api/assignments/summary").json()
+
+    assert summary["control"]["mode"] == "draining"
+    assert summary["control"]["lease_renewals_allowed"] is True
+    assert any(rec["action"] == "drain_assignment_governor" for rec in summary["recommendations"])
 
 
 def test_ops_summary_reports_cache_state(tmp_path):
@@ -372,6 +434,7 @@ def test_ops_summary_reports_cache_state(tmp_path):
 
     assert summary["cache_role"] == "cache_outbox_only"
     assert summary["canonical_source"] == "neo4j_via_assistx"
+    assert summary["control"]["mode"] == "enabled"
     assert summary["assignments_by_status"] == {"recommended": 1}
     assert summary["outbox_by_status"] == {"pending": 2}
     assert summary["inbound_by_type"] == {"router.service_snapshot.recorded": 1}
