@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
+from .control import AssignmentControlStore
 from .events import EventType, ROUTER_SNAPSHOT_EVENTS
 from .models import (
     AssignmentApprovalRequest,
@@ -16,6 +17,7 @@ from .models import (
     EventEnvelope,
     HeartbeatRequest,
     Lane,
+    RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,
     utc_now,
@@ -40,6 +42,34 @@ class AssignmentService:
         self.scorer = scorer
         self.last_tick_at: str | None = None
         self._init_inbound_processing_schema()
+
+    def _control(self) -> dict:
+        return AssignmentControlStore(self.settings.sqlite_path).get()
+
+    def _assignment_control_blocks_new_work(self) -> dict | None:
+        control = self._control()
+        if control.get("new_assignments_allowed"):
+            return None
+        return control
+
+    def _control_blocked_decision(
+        self,
+        candidate: AssignmentCandidate,
+        control: dict,
+        dry_run: bool,
+    ) -> AssignmentDecision:
+        reason_code = f"assignment_control_{control.get('mode', 'paused')}"
+        reason = f"assignment control mode is {control.get('mode')}; new assignment decisions are paused"
+        decision = self.scorer._blocked(  # internal service/scorer coupling for a consistent blocked decision shape
+            candidate,
+            RouterSnapshot(reachable=False, context_revision="assignment-control"),
+            canonical_status=control.get("mode"),
+            reason_code=reason_code,
+            reason=reason,
+        )
+        self.cache.upsert_assignment(decision)
+        self.cache.enqueue_event(self._decision_event(decision, dry_run=dry_run))
+        return decision
 
     def _init_inbound_processing_schema(self) -> None:
         with self.cache.connect() as conn:
@@ -121,6 +151,10 @@ class AssignmentService:
         else:
             candidate.allowed_lanes = request.candidate_lanes
 
+        blocked_control = self._assignment_control_blocks_new_work()
+        if blocked_control:
+            return self._control_blocked_decision(candidate, blocked_control, dry_run=request.dry_run)
+
         router_snapshot = await self.router.snapshot()
         status = await self.assistx.event_status(
             self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
@@ -132,6 +166,30 @@ class AssignmentService:
         return decision
 
     async def scheduler_tick(self, request: SchedulerTickRequest) -> SchedulerTickResponse:
+        blocked_control = self._assignment_control_blocks_new_work()
+        if blocked_control:
+            scheduler_run_id = f"tick_{uuid4().hex[:12]}"
+            self.last_tick_at = utc_now().isoformat()
+            self.cache.record_scheduler_run(
+                scheduler_run_id=scheduler_run_id,
+                trigger_reason=f"{request.reason}:blocked_by_assignment_control:{blocked_control.get('mode')}",
+                dry_run=request.dry_run,
+                evaluated_count=0,
+                recommended_count=0,
+                skipped_count=0,
+                error_summary=f"assignment control mode {blocked_control.get('mode')} blocks scheduler ticks",
+            )
+            return SchedulerTickResponse(
+                scheduler_run_id=scheduler_run_id,
+                dry_run=request.dry_run,
+                evaluated=0,
+                recommended=0,
+                approval_required=0,
+                skipped=0,
+                released_expired=0,
+                decisions=[],
+            )
+
         candidates = []
         if request.task_ids:
             candidates = [AssignmentCandidate(task_id=task_id) for task_id in request.task_ids]
