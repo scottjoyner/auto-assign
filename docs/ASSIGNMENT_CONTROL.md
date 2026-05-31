@@ -88,7 +88,52 @@ Response includes the updated state and the outbox event reference:
 
 During the current MVP, dispatch is still separately disabled by configuration. Control mode does not override `AUTO_ASSIGN_DISPATCH_ENABLED=false` or `AUTO_ASSIGN_DIRECT_WORKERS_ENABLED=false`.
 
-## 4. Assignment summary integration
+## 4. Enforcement behavior
+
+### Assignment evaluation
+
+`POST /api/assignments/evaluate` now checks assignment control before creating a normal recommendation.
+
+When mode is `paused`, `draining`, or `maintenance`, evaluation returns a blocked decision and emits an `assign.assignment.skipped` event:
+
+```json
+{
+  "status": "blocked",
+  "selected_lane": "blocked",
+  "canonical_status": "paused",
+  "reasons": [
+    "assignment control mode is paused; new assignment decisions are paused"
+  ]
+}
+```
+
+This is intentionally visible in local assignment history and outbox state so AssistX/Neo4j can later materialize why the task was skipped.
+
+### Scheduler ticks
+
+`POST /api/scheduler/tick` checks assignment control before reading AssistX backlog candidates.
+
+When mode is `paused`, `draining`, or `maintenance`, scheduler tick returns a no-op response:
+
+```json
+{
+  "evaluated": 0,
+  "recommended": 0,
+  "approval_required": 0,
+  "skipped": 0,
+  "decisions": []
+}
+```
+
+A scheduler run is still recorded locally with an `error_summary` such as:
+
+```text
+assignment control mode draining blocks scheduler ticks
+```
+
+This gives operators a visible audit trail without accidentally pulling new work.
+
+## 5. Assignment summary integration
 
 `GET /api/assignments/summary` includes the control state:
 
@@ -121,13 +166,13 @@ Recommendation behavior:
 | `draining` | `drain_assignment_governor` |
 | `enabled` | normal outbox/heartbeat/dry-run recommendations |
 
-## 5. Health and ops integration
+## 6. Health and ops integration
 
 `GET /health` includes control under the scheduler block.
 
 `GET /api/ops/summary` includes the current control object.
 
-## 6. Operator commands
+## 7. Operator commands
 
 Pause new assignment decisions:
 
@@ -165,7 +210,7 @@ curl -X POST http://localhost:8090/api/assignment-control \
   }' | jq
 ```
 
-## 7. Current boundary
+## 8. Current boundary
 
 Implemented now:
 
@@ -176,10 +221,13 @@ Implemented now:
 - health integration;
 - ops summary integration;
 - assignment summary integration;
-- tests for defaults, updates, paused summary, and draining summary.
+- control-aware recommendations;
+- `POST /api/assignments/evaluate` blocked decisions when new assignments are not allowed;
+- `POST /api/scheduler/tick` no-op when scheduler ticks are blocked;
+- tests for defaults, updates, paused/draining summary, blocked evaluation, blocked scheduler ticks, and enabled scheduler ticks.
 
-Still to enforce in the next pass:
+Still future work:
 
-- `POST /api/assignments/evaluate` should block or return control-paused decisions when new assignments are not allowed;
-- `POST /api/scheduler/tick` should block or no-op when scheduler ticks are not allowed;
-- future lease reserve/renew endpoints must honor `new_assignments_allowed` and `lease_renewals_allowed`.
+- future lease reserve/renew endpoints must honor `new_assignments_allowed` and `lease_renewals_allowed`;
+- eventual dispatch must honor both assignment control and dispatch/direct-worker feature flags;
+- AssistX/Neo4j should materialize `assign.control.changed` and blocked `assign.assignment.skipped` events as canonical graph facts.
