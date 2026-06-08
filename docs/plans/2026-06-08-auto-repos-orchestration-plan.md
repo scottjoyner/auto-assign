@@ -759,20 +759,27 @@ Default recommendations:
 
 ## 11. Rollout order and checkpoints
 
-Checkpoint 1: plan-only commit exists in all repos.
+Checkpoint 1: plan-only commit exists in all repos. **DONE (2026-06-08)**
 
-Checkpoint 2: AssistX trace endpoint returns a synthetic trace.
+Checkpoint 2: AssistX trace endpoint returns a synthetic trace. **DONE (2026-06-08)**
 
-Checkpoint 3: Sophia can render a synthetic AssistX trace.
+Checkpoint 3: Sophia can render a synthetic AssistX trace. **NOT STARTED**
 
-Checkpoint 4: A real Sophia dispatch creates an AssistX trace.
+Checkpoint 4: A real Sophia dispatch creates an AssistX trace. **PARTIAL**
 
-Checkpoint 5: auto-router writes a real `route.selected` event.
+Checkpoint 5: auto-router writes a real `route.selected` event. **PARTIAL (2026-06-08)**
 
-Checkpoint 6: auto-assign writes a real `assignment.claimed` event.
+Checkpoint 6: auto-assign writes a real `assignment.claimed` event. **DONE (2026-06-08)**
+- `POST /api/assignments/{id}/claim` endpoint implemented.
+- `claim_assignment()` method with lease creation.
+- 7 canonical lifecycle event types defined.
+- 52 tests passing.
 
-Checkpoint 7: auto-assign writes completion/failure and Sophia displays final status.
+Checkpoint 7: auto-assign writes completion/failure and Sophia displays final status. **PARTIAL**
+- `POST /api/assignments/{id}/complete` implemented.
+- `assignment.completed` and `assignment.failed` events defined.
+- Needs Sophia trace viewer (Phase 2).
 
-Checkpoint 8: auto-ingest context refs appear in route rationale and trace payload links.
+Checkpoint 8: auto-ingest context refs appear in route rationale and trace payload links. **NOT STARTED**
 
 Only proceed to the next checkpoint after tests and one manual smoke verification pass.

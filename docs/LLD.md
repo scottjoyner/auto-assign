@@ -230,6 +230,71 @@ Release request:
 }
 ```
 
+### 4.7 Claim and complete (2026-06-08)
+
+```text
+POST /api/assignments/{assignment_id}/claim
+POST /api/assignments/{assignment_id}/complete
+POST /api/assignments/expire-stale
+```
+
+Claim request:
+
+```json
+{
+  "worker_id": "xwing:hermes:session-id",
+  "node_id": "xwing",
+  "correlation_id": "...",
+  "task_id": "...",
+  "lease_seconds": 900,
+  "capabilities": ["terminal", "file"]
+}
+```
+
+Claim response:
+
+```json
+{
+  "assignment_id": "assign_ASS-28_001",
+  "status": "claimed",
+  "worker_id": "xwing:hermes:session-id",
+  "node_id": "xwing",
+  "lease_expires_at": "2026-06-08T15:15:00Z",
+  "event_type": "assignment.claimed"
+}
+```
+
+Complete request:
+
+```json
+{
+  "worker_id": "xwing:hermes:session-id",
+  "status": "success",
+  "summary": "Task completed successfully",
+  "correlation_id": "...",
+  "task_id": "..."
+}
+```
+
+Complete response:
+
+```json
+{
+  "assignment_id": "assign_ASS-28_001",
+  "status": "completed",
+  "event_type": "assignment.completed"
+}
+```
+
+Expire-stale response:
+
+```json
+{
+  "expired_count": 3,
+  "expired_assignment_ids": ["assign_001", "assign_002", "assign_003"]
+}
+```
+
 ### 4.7 Heartbeats
 
 ```text

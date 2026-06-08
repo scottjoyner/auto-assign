@@ -10,6 +10,21 @@ Neo4j via AssistX remains canonical. Events cached inside `auto-assign` are eith
 
 The implementation source of truth for event names is `src/auto_assign/events.py`.
 
+## Canonical cross-repo lifecycle events (2026-06-08)
+
+These are the canonical assignment lifecycle event types used across the auto-* ecosystem:
+
+| Event type | When emitted | Source |
+|---|---|---|
+| `assignment.requested` | AssistX requests an assignment for a routed task | auto-assist |
+| `assignment.recommended` | auto-assign recommends a worker/lane for a task | auto-assign |
+| `assignment.claimed` | A worker claims an assignment, starting a lease | auto-assign |
+| `assignment.heartbeat` | A worker sends a heartbeat, renewing its lease | auto-assign |
+| `assignment.completed` | A worker completes an assignment | auto-assign |
+| `assignment.failed` | A worker reports failure on an assignment | auto-assign |
+| `assignment.expired` | An assignment lease expires without heartbeat renewal | auto-assign |
+| `assignment.released` | An assignment is released (operator or lease expiry) | auto-assign |
+
 ## Envelope
 
 All internal events use `EventEnvelope`:

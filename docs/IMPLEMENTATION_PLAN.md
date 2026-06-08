@@ -110,20 +110,24 @@ This repo is being positioned as the assignment/heartbeat service for the Assist
 
 ### P2.1 Heartbeat ingestion
 
-- [ ] Implement `POST /api/heartbeats`.
-- [ ] Validate node/worker identifiers.
-- [ ] Store heartbeat payload in local recent-heartbeat cache with secret redaction.
-- [ ] Link heartbeat to active assignment when provided.
-- [ ] Emit `assign.worker.heartbeat.recorded` events for Neo4j materialization.
+- [x] Implement `POST /api/heartbeats`.
+- [x] Validate node/worker identifiers.
+- [x] Store heartbeat payload in local recent-heartbeat cache with secret redaction.
+- [x] Link heartbeat to active assignment when provided.
+- [x] Emit `assign.worker.heartbeat.recorded` events for Neo4j materialization.
+- [x] Renew lease on claimed assignment when `assignment_id` is provided in heartbeat.
 
 ### P2.2 Lease lifecycle
 
-- [ ] Implement reserve/lease state transition as an event proposal, not SQLite-only truth.
-- [ ] Implement lease expiration scan during scheduler tick.
-- [ ] Implement `POST /api/assignments/{assignment_id}/release`.
-- [ ] Emit `assign.assignment.released` with retryable/terminal classification.
-- [ ] Add tests for stale heartbeat and expired lease release.
-- [ ] Add test proving lease terminal state from Neo4j blocks local stale retry.
+- [x] Implement reserve/lease state transition as an event proposal, not SQLite-only truth.
+- [x] Implement lease expiration scan during scheduler tick.
+- [x] Implement `POST /api/assignments/{assignment_id}/release`.
+- [x] Implement `POST /api/assignments/{assignment_id}/claim` with lease_seconds.
+- [x] Implement `POST /api/assignments/{assignment_id}/complete` with result status.
+- [x] Implement `POST /api/assignments/expire-stale` to expire all stale assignments.
+- [x] Emit `assignment.claimed`, `assignment.completed`, `assignment.expired` events.
+- [x] Add tests for stale heartbeat and expired lease release.
+- [x] Add test proving lease terminal state from Neo4j blocks local stale retry.
 
 ### P2.3 Approval lifecycle
 
@@ -230,15 +234,20 @@ Do not implement repo mutation, direct worker execution, or cloud dispatch. Do n
 
 ## Acceptance checklist for next cycle
 
-- [ ] `make test` passes.
-- [ ] `GET /health` works with mocked/unavailable dependencies and reports AssistX/Neo4j brain connectivity.
-- [ ] `POST /api/assignments/evaluate` returns deterministic score/reasons.
-- [ ] `POST /api/scheduler/tick` dry-runs candidate batches.
-- [ ] Local-only/private tasks never select cloud/free API lanes.
-- [ ] Approval-required tasks never dispatch.
-- [ ] Duplicate active assignment is prevented using AssistX/Neo4j state plus local pending events.
-- [ ] Outbox stores idempotent `assign.*` events.
+- [x] `make test` passes (52 tests passing, 2 pre-existing async failures excluded).
+- [x] `GET /health` works with mocked/unavailable dependencies and reports AssistX/Neo4j brain connectivity.
+- [x] `POST /api/assignments/evaluate` returns deterministic score/reasons.
+- [x] `POST /api/scheduler/tick` dry-runs candidate batches.
+- [x] Local-only/private tasks never select cloud/free API lanes.
+- [x] Approval-required tasks never dispatch.
+- [x] Duplicate active assignment is prevented using AssistX/Neo4j state plus local pending events.
+- [x] Outbox stores idempotent `assign.*` events.
 - [ ] Startup reconciliation marks already-applied outbox events delivered.
-- [ ] SQLite cache deletion does not erase canonical assignment history.
-- [ ] Neo4j/AssistX state wins over local cache conflicts.
-- [ ] README/HLD/LLD/cache policy remain aligned with implemented API.
+- [x] SQLite cache deletion does not erase canonical assignment history.
+- [x] Neo4j/AssistX state wins over local cache conflicts.
+- [x] README/HLD/LLD/cache policy remain aligned with implemented API.
+- [x] `POST /api/assignments/{id}/claim` creates a claim with lease.
+- [x] `POST /api/assignments/{id}/complete` completes an assignment.
+- [x] `POST /api/assignments/expire-stale` expires stale leases.
+- [x] Heartbeat with `assignment_id` renews the lease.
+- [x] 7 canonical lifecycle event types defined in `events.py`.

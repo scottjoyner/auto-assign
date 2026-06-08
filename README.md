@@ -120,7 +120,10 @@ Initial service endpoints should be private-network/Tailscale only:
 | `GET` | `/api/assignments/{assignment_id}` | Read one local assignment mirror row. |
 | `POST` | `/api/assignments/{assignment_id}/approve` | Approve a gated assignment through AssistX/Neo4j policy flow. |
 | `POST` | `/api/assignments/{assignment_id}/release` | Release an expired or blocked assignment through AssistX/Neo4j event write-back. |
-| `POST` | `/api/heartbeats` | Record node/worker heartbeat payloads. |
+| `POST` | `/api/assignments/{assignment_id}/claim` | Claim an assignment with a worker, starting a lease with `lease_seconds` (default 900). |
+| `POST` | `/api/assignments/{assignment_id}/complete` | Complete an assignment with result status and summary. |
+| `POST` | `/api/assignments/expire-stale` | Expire all stale assignments (lease expired without heartbeat renewal). |
+| `POST` | `/api/heartbeats` | Record node/worker heartbeat payloads. Renew lease on claimed assignment if `assignment_id` provided. |
 | `GET` | `/api/heartbeats` | List recent local heartbeat mirror rows. |
 | `GET` | `/api/heartbeats/stale` | Read-only view of locally stale heartbeat rows. |
 | `GET` | `/api/outbox/summary` | Summarize local outbox event status counts. |
