@@ -57,6 +57,7 @@ flowchart LR
 | [`auto-router`](https://github.com/scottjoyner/auto-router) | OpenAI-compatible router, quota manager, service/model/CLI discovery, route provenance | Query route/capability/quota summaries; request dry-run plans for assignment scoring; never bypass privacy/local-only rules. |
 | SQLite cache in `auto-assign` | Local resilience only | Pending outbox events, dedupe keys, transient scheduler summaries, inbound event mirrors, inbound processing state, heartbeat mirrors, and rebuildable local views. Not a system of record. |
 | Paperclip / `hermes_local` | Current cutover execution path | Treat as the supported execution lane until direct worker claiming is explicitly promoted. |
+| xwing direct worker | First active local development-worker candidate | Use for dry-run scoring and supervised repo-local development bootstrap; enable mutation only after approval, sandboxing, leases, and write-back contracts are implemented. |
 | Future direct workers | Deferred execution lanes | Use only after approval, sandboxing, leases, and write-back contracts are implemented. |
 
 ## Operating model
@@ -99,6 +100,7 @@ sequenceDiagram
 - [`docs/NEO4J_BRAIN_AND_CACHE_POLICY.md`](docs/NEO4J_BRAIN_AND_CACHE_POLICY.md) — canonical decision that Neo4j is the true brain and SQLite is only cache/outbox/replay state.
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — prioritized implementation plan for the next cycle.
 - [`docs/LOCAL_VALIDATION.md`](docs/LOCAL_VALIDATION.md) — local smoke-test and dry-run validation guide.
+- [`docs/plans/2026-06-08-xwing-agent-development-handoff.md`](docs/plans/2026-06-08-xwing-agent-development-handoff.md) — verified xwing-first worker readiness, endpoint inventory, and agent kickoff sequence.
 
 ## API surface
 

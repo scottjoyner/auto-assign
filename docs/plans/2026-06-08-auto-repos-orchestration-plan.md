@@ -188,7 +188,7 @@ Response:
     "assignment": "claimed",
     "worker": "xwing",
     "lane": "local",
-    "model": "qwen-or-current-model"
+    "model": "google/gemma-4-12b"
   },
   "events": [
     {
@@ -390,8 +390,8 @@ Minimum node record:
     {
       "service_id": "xwing.lmstudio",
       "service_type": "llm.chat",
-      "url": "http://100.108.99.47:1235/v1",
-      "health_url": "http://100.108.99.47:1235/v1/models",
+      "url": "http://100.108.99.47:1234/v1",
+      "health_url": "http://100.108.99.47:1234/v1/models",
       "status": "online"
     }
   ]
@@ -399,10 +399,10 @@ Minimum node record:
 ```
 
 Current known planning roles:
-- `x1-370`: heavy reasoning, orchestration, local voice prep, primary local LLM endpoint.
-- `xwing`: fast iteration, fresh Ubuntu replacement node, quick local model endpoint.
-- `deathstar-XPS-8920`: VRAM-fit inference, auto-ingest and Neo4j-adjacent workloads.
-- `Scott’s MacBook Air`: quick iteration and Sophia response prep.
+- `xwing`: first active Hermes development worker candidate. Verified online 2026-06-08 at `http://100.108.99.47:1234/v1` with `google/gemma-4-12b` as the baseline model, clean Sophia/auto-assist/auto-router/auto-assign repos, and Hermes gateway/CLI processes running.
+- `x1-370`: heavy reasoning, orchestration, local voice prep, and graph/service review. From xwing, its LM Studio endpoint was not reachable during the 2026-06-08 probe, so require a fresh health check before routing xwing-originated model calls there.
+- `deathstar-XPS-8920`: VRAM-fit inference, auto-ingest and Neo4j-adjacent workloads; verified reachable from xwing at `http://100.78.106.121:1234/v1`.
+- `Scott’s MacBook Air`: quick iteration and Sophia response prep; verified reachable from xwing at `http://100.85.64.117:1234/v1`.
 
 ---
 

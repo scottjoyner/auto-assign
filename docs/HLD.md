@@ -172,7 +172,7 @@ Candidate lane categories:
 | `router_model` | LLM request routed through `auto-router`. | Allowed for planning/drafting when privacy/quota policy permits. |
 | `local_only` | Local LM Studio or local tools. | Required for sensitive/private work. |
 | `free_api` | Hosted free quota providers. | Allowed only for non-sensitive work and after reserve checks. |
-| `direct_worker` | Future direct worker nodes. | Disabled until sandbox/approval/lease flow is complete. |
+| `direct_worker` | Direct Hermes worker nodes such as xwing. | Candidate lane for dry-run scoring now; execution remains disabled until sandbox/approval/lease flow is complete. |
 | `blocked` | No safe route available. | Emits skip reason. |
 
 Example score components:
