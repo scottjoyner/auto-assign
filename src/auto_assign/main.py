@@ -11,6 +11,8 @@ from .clients import AssistXClient, RouterClient
 from .control import AssignmentControlStore
 from .models import (
     AssignmentApprovalRequest,
+    AssignmentClaimRequest,
+    AssignmentCompletionRequest,
     AssignmentControlRequest,
     AssignmentEvaluateRequest,
     AssignmentReleaseRequest,
@@ -366,12 +368,43 @@ async def release_assignment(
     return result
 
 
+@app.post("/api/assignments/{assignment_id}/claim")
+async def claim_assignment(
+    assignment_id: str,
+    request: AssignmentClaimRequest,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    result = await service.claim_assignment(assignment_id, request)
+    if not result.get("accepted"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/assignments/{assignment_id}/complete")
+async def complete_assignment(
+    assignment_id: str,
+    request: AssignmentCompletionRequest,
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    result = await service.complete_assignment(assignment_id, request)
+    if not result.get("accepted"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/assignments/expire-stale")
+async def expire_stale_leases(
+    service: Annotated[AssignmentService, Depends(get_assignment_service)],
+):
+    return service.expire_stale_leases()
+
+
 @app.post("/api/heartbeats")
 async def record_heartbeat(
     request: HeartbeatRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
-    event = service.record_heartbeat(request)
+    event = service.record_heartbeat_with_lease_renewal(request)
     return {
         "accepted": True,
         "event_id": event.event_id,

@@ -431,6 +431,71 @@ class CacheStore:
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
 
+    def update_assignment_status(
+        self,
+        assignment_id: str,
+        *,
+        status: str | None = None,
+        worker_id: str | None = None,
+        node_id: str | None = None,
+        lease_expires_at: float | None = None,
+    ) -> bool:
+        now = utc_now().isoformat()
+        updates = ["updated_at=?"]
+        params: list[Any] = [now]
+        if status is not None:
+            updates.append("status=?")
+            params.append(status)
+        if lease_expires_at is not None:
+            updates.append("lease_expires_at=?")
+            params.append(str(lease_expires_at))
+        params.append(assignment_id)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE assignments SET {', '.join(updates)} WHERE assignment_id=?",
+                params,
+            )
+            if worker_id or node_id:
+                row = conn.execute(
+                    "SELECT payload_json FROM assignments WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchone()
+                if row:
+                    payload = json.loads(row["payload_json"])
+                    if worker_id:
+                        payload["worker_id"] = worker_id
+                    if node_id:
+                        payload["node_id"] = node_id
+                    if status:
+                        payload["status"] = status
+                    conn.execute(
+                        "UPDATE assignments SET payload_json=? WHERE assignment_id=?",
+                        (json.dumps(payload, sort_keys=True), assignment_id),
+                    )
+            return cursor.rowcount > 0
+
+    def expire_stale_assignments(self, stale_seconds: int = 3600) -> list[str]:
+        cutoff = (utc_now() - timedelta(seconds=stale_seconds)).isoformat()
+        expired_ids: list[str] = []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT assignment_id FROM assignments
+                WHERE status IN ('running', 'dispatched')
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                aid = row["assignment_id"]
+                conn.execute(
+                    "UPDATE assignments SET status='released', updated_at=? WHERE assignment_id=?",
+                    (utc_now().isoformat(), aid),
+                )
+                expired_ids.append(aid)
+        return expired_ids
+
     def ops_summary(self) -> dict[str, Any]:
         with self.connect() as conn:
             assignment_rows = conn.execute(

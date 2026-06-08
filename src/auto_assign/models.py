@@ -50,6 +50,7 @@ class EventEnvelope(BaseModel):
     subject: str
     payload: dict[str, Any] = Field(default_factory=dict)
     privacy: list[str] = Field(default_factory=list)
+    correlation_id: str | None = None
 
 
 class AssignmentCandidate(BaseModel):
@@ -178,3 +179,29 @@ class HealthResponse(BaseModel):
     router: dict[str, Any]
     cache: dict[str, Any]
     scheduler: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Orchestration plan claim / completion models (Section 4.3)
+# ---------------------------------------------------------------------------
+
+class AssignmentClaimRequest(BaseModel):
+    correlation_id: str
+    task_id: str
+    route_id: str | None = None
+    worker_id: str
+    node_id: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    lease_seconds: int = Field(default=900, ge=60, le=86400)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssignmentCompletionRequest(BaseModel):
+    correlation_id: str
+    assignment_id: str
+    task_id: str
+    worker_id: str
+    status: str = "success"
+    summary: str = ""
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)

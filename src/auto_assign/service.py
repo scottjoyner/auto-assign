@@ -10,6 +10,8 @@ from .events import EventType, ROUTER_SNAPSHOT_EVENTS
 from .models import (
     AssignmentApprovalRequest,
     AssignmentCandidate,
+    AssignmentClaimRequest,
+    AssignmentCompletionRequest,
     AssignmentDecision,
     AssignmentEvaluateRequest,
     AssignmentReleaseRequest,
@@ -505,3 +507,137 @@ class AssignmentService:
             payload={**decision.model_dump(mode="json"), "dry_run": dry_run, "cache_role": "outbox_replay_buffer"},
             privacy=[],
         )
+
+    # ------------------------------------------------------------------
+    # Orchestration plan claim / lease / completion lifecycle
+    # ------------------------------------------------------------------
+
+    async def claim_assignment(self, assignment_id: str, request: AssignmentClaimRequest) -> dict:
+        assignment = self.cache.get_assignment(assignment_id)
+        if assignment is None:
+            return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        if assignment.get("status") not in ("recommended", "reserved"):
+            return {"accepted": False, "reason": f"assignment status '{assignment.get('status')}' is not claimable"}
+
+        now = utc_now()
+        lease_expires = now.timestamp() + request.lease_seconds
+        self.cache.update_assignment_status(
+            assignment_id,
+            status="running",
+            worker_id=request.worker_id,
+            node_id=request.node_id,
+            lease_expires_at=lease_expires,
+        )
+
+        event = EventEnvelope(
+            event_type=EventType.ASSIGNMENT_CLAIMED,
+            idempotency_key=f"{EventType.ASSIGNMENT_CLAIMED}:{assignment_id}:{request.worker_id}:{request.correlation_id}",
+            subject=request.task_id,
+            correlation_id=request.correlation_id,
+            payload={
+                "assignment_id": assignment_id,
+                "task_id": request.task_id,
+                "route_id": request.route_id,
+                "worker_id": request.worker_id,
+                "node_id": request.node_id,
+                "capabilities": request.capabilities,
+                "lease_seconds": request.lease_seconds,
+                "lease_expires_at": lease_expires,
+                "correlation_id": request.correlation_id,
+                **request.metadata,
+            },
+        )
+        self.cache.enqueue_event(event)
+        return {
+            "accepted": True,
+            "event_id": event.event_id,
+            "assignment_id": assignment_id,
+            "worker_id": request.worker_id,
+            "lease_expires_at": lease_expires,
+            "correlation_id": request.correlation_id,
+        }
+
+    async def complete_assignment(self, assignment_id: str, request: AssignmentCompletionRequest) -> dict:
+        assignment = self.cache.get_assignment(assignment_id)
+        if assignment is None:
+            return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+
+        status = "done" if request.status == "success" else "failed"
+        self.cache.update_assignment_status(assignment_id, status=status)
+
+        event_type = EventType.ASSIGNMENT_COMPLETED if status == "done" else EventType.ASSIGNMENT_FAILED
+        event = EventEnvelope(
+            event_type=event_type,
+            idempotency_key=f"{event_type}:{assignment_id}:{request.worker_id}:{request.status}:{utc_now().isoformat()}",
+            subject=request.task_id,
+            correlation_id=request.correlation_id,
+            payload={
+                "assignment_id": assignment_id,
+                "task_id": request.task_id,
+                "worker_id": request.worker_id,
+                "status": request.status,
+                "summary": request.summary,
+                "artifacts": request.artifacts,
+                "correlation_id": request.correlation_id,
+                **request.metadata,
+            },
+        )
+        self.cache.enqueue_event(event)
+        return {
+            "accepted": True,
+            "event_id": event.event_id,
+            "assignment_id": assignment_id,
+            "status": status,
+            "correlation_id": request.correlation_id,
+        }
+
+    def record_heartbeat_with_lease_renewal(self, heartbeat: HeartbeatRequest) -> EventEnvelope:
+        heartbeat_id = f"heartbeat_{uuid4().hex}"
+        self.cache.record_heartbeat(heartbeat_id, heartbeat)
+
+        lease_renewed = False
+        if heartbeat.assignment_id:
+            assignment = self.cache.get_assignment(heartbeat.assignment_id)
+            if assignment and assignment.get("worker_id") == heartbeat.worker_id:
+                lease_expires = utc_now().timestamp() + self.settings.stale_heartbeat_seconds * 2
+                self.cache.update_assignment_status(
+                    heartbeat.assignment_id,
+                    status=assignment.get("status", "running"),
+                    lease_expires_at=lease_expires,
+                )
+                lease_renewed = True
+
+        event = EventEnvelope(
+            event_type=EventType.ASSIGNMENT_HEARTBEAT,
+            idempotency_key=f"{EventType.ASSIGNMENT_HEARTBEAT}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
+            subject=heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
+            payload={
+                "heartbeat_id": heartbeat_id,
+                "lease_renewed": lease_renewed,
+                **heartbeat.model_dump(mode="json"),
+            },
+        )
+        self.cache.enqueue_event(event)
+        return event
+
+    def expire_stale_leases(self) -> dict:
+        stale_threshold = self.settings.stale_heartbeat_seconds
+        expired = self.cache.expire_stale_assignments(stale_seconds=stale_threshold)
+        expired_events = 0
+        for assignment_id in expired:
+            assignment = self.cache.get_assignment(assignment_id)
+            if assignment:
+                event = EventEnvelope(
+                    event_type=EventType.ASSIGNMENT_EXPIRED,
+                    idempotency_key=f"{EventType.ASSIGNMENT_EXPIRED}:{assignment_id}:{utc_now().isoformat()}",
+                    subject=assignment.get("task_id", assignment_id),
+                    payload={
+                        "assignment_id": assignment_id,
+                        "task_id": assignment.get("task_id"),
+                        "worker_id": assignment.get("worker_id"),
+                        "reason": "lease_expired",
+                    },
+                )
+                self.cache.enqueue_event(event)
+                expired_events += 1
+        return {"expired_count": len(expired), "events_emitted": expired_events}
