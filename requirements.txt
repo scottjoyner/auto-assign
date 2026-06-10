@@ -1,4 +1,19 @@
+# Runtime — FastAPI service
+aiosqlite
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Runtime — Flask semantic search app
 flask
-neo4j
 torch
 transformers
+
+# Neo4j driver (used by both runtimes)
+neo4j
+
+# Dev
+pytest
+pytest-asyncio
+ruff

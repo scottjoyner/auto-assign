@@ -172,12 +172,12 @@ class HeartbeatRequest(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    ok: bool
     status: str
     service: str = "auto-assign"
     version: str
-    assistx: dict[str, Any]
-    router: dict[str, Any]
-    cache: dict[str, Any]
+    uptime: float
+    deps: dict[str, Any]
     scheduler: dict[str, Any]
 
 

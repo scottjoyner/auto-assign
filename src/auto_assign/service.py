@@ -43,7 +43,6 @@ class AssignmentService:
         self.router = router
         self.scorer = scorer
         self.last_tick_at: str | None = None
-        self._init_inbound_processing_schema()
 
     def _control(self) -> dict:
         return AssignmentControlStore(self.settings.sqlite_path).get()
@@ -62,7 +61,7 @@ class AssignmentService:
     ) -> AssignmentDecision:
         reason_code = f"assignment_control_{control.get('mode', 'paused')}"
         reason = f"assignment control mode is {control.get('mode')}; new assignment decisions are paused"
-        decision = self.scorer._blocked(  # internal service/scorer coupling for a consistent blocked decision shape
+        decision = self.scorer.blocked(
             candidate,
             RouterSnapshot(reachable=False, context_revision="assignment-control"),
             canonical_status=control.get("mode"),
@@ -73,41 +72,20 @@ class AssignmentService:
         self.cache.enqueue_event(self._decision_event(decision, dry_run=dry_run))
         return decision
 
-    def _init_inbound_processing_schema(self) -> None:
-        with self.cache.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS inbound_event_processing (
-                    idempotency_key TEXT PRIMARY KEY,
-                    event_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    action_json TEXT NOT NULL,
-                    processed_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_inbound_event_processing_status
-                ON inbound_event_processing(status)
-                """
-            )
-
-    def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
-        with self.cache.connect() as conn:
-            row = conn.execute(
+    async def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
+        async with await self.cache.aconnect() as db:
+            cursor = await db.execute(
                 "SELECT status FROM inbound_event_processing WHERE idempotency_key = ?",
                 (idempotency_key,),
-            ).fetchone()
+            )
+            row = await cursor.fetchone()
         return row is not None
 
-    def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
+    async def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
         now = utc_now().isoformat()
         status = action.get("action", "processed")
-        with self.cache.connect() as conn:
-            conn.execute(
+        async with await self.cache.aconnect() as db:
+            await db.execute(
                 """
                 INSERT INTO inbound_event_processing (
                     idempotency_key, event_id, event_type, status, action_json,
@@ -333,7 +311,7 @@ class AssignmentService:
         router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
-            if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
+            if not include_processed and await self._inbound_event_was_processed(event["idempotency_key"]):
                 skipped_already_processed += 1
                 continue
             event_name = event.get("event_type")
@@ -384,7 +362,7 @@ class AssignmentService:
                     "action": "ignored",
                     "reason": "no_processor_registered",
                 }
-            self._mark_inbound_event_processed(event, action)
+            await self._mark_inbound_event_processed(event, action)
             actions.append(action)
         return {
             "processed": len(actions),
@@ -599,7 +577,7 @@ class AssignmentService:
         if heartbeat.assignment_id:
             assignment = self.cache.get_assignment(heartbeat.assignment_id)
             if assignment and assignment.get("worker_id") == heartbeat.worker_id:
-                lease_expires = utc_now().timestamp() + self.settings.stale_heartbeat_seconds * 2
+                lease_expires = utc_now().timestamp() + self.settings.default_lease_seconds
                 self.cache.update_assignment_status(
                     heartbeat.assignment_id,
                     status=assignment.get("status", "running"),
@@ -621,7 +599,7 @@ class AssignmentService:
         return event
 
     def expire_stale_leases(self) -> dict:
-        stale_threshold = self.settings.stale_heartbeat_seconds
+        stale_threshold = self.settings.default_lease_seconds
         expired = self.cache.expire_stale_assignments(stale_seconds=stale_threshold)
         expired_events = 0
         for assignment_id in expired:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -7,6 +10,9 @@ import httpx
 
 from .models import AssignmentCandidate, EventEnvelope, RouterSnapshot
 from .settings import Settings
+from .tracing_utils import inject_trace_headers
+
+logger = logging.getLogger(__name__)
 
 
 class AssistXClient:
@@ -26,11 +32,17 @@ class AssistXClient:
     def __init__(self, settings: Settings):
         self.base_url = settings.assistx_base_url.rstrip("/")
         self.timeout = settings.assistx_timeout_seconds
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+
+    async def close(self):
+        await self._client.aclose()
+
+    def _default_headers(self) -> dict[str, str]:
+        return inject_trace_headers()
 
     async def health(self) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_url}/health")
+            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers())
             return {
                 "reachable": response.is_success,
                 "status_code": response.status_code,
@@ -42,11 +54,11 @@ class AssistXClient:
     async def get_backlog_candidates(self, limit: int = 25) -> list[AssignmentCandidate]:
         url = f"{self.base_url}/api/router/backlog-candidates"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(
-                    url,
-                    params={"limit": limit, "queue": "backlog", "dry_run": "true"},
-                )
+            response = await self._client.get(
+                url,
+                params={"limit": limit, "queue": "backlog", "dry_run": "true"},
+                headers=self._default_headers(),
+            )
             response.raise_for_status()
             payload = response.json()
             items = self._extract_items(payload)
@@ -57,32 +69,59 @@ class AssistXClient:
     async def get_task(self, task_id: str) -> AssignmentCandidate | None:
         for path in (f"/api/tasks/{task_id}", f"/api/router/tasks/{task_id}"):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.get(f"{self.base_url}{path}")
+                response = await self._client.get(f"{self.base_url}{path}", headers=self._default_headers())
                 if response.is_success:
                     return self._candidate_from_item(response.json())
-            except Exception:
+            except Exception as exc:
+                logger.debug("get_task %s failed on %s: %s", task_id, path, exc)
                 continue
+        return None
         return None
 
     async def event_status(self, idempotency_key: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/events/status"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, params={"idempotency_key": idempotency_key})
+            response = await self._client.get(url, params={"idempotency_key": idempotency_key}, headers=self._default_headers())
             if response.is_success:
                 return response.json()
         except Exception:
             pass
         return {"known": False}
 
+    async def _request_with_retry(
+        self, method: str, url: str, max_retries: int = 3, **kwargs: Any
+    ) -> httpx.Response:
+        last_exc: Exception | None = None
+        headers = dict(kwargs.pop("headers", {}))
+        headers.update(self._default_headers())
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self._client.request(method, url, headers=headers, **kwargs)
+                if response.is_success or response.status_code in (409, 404):
+                    return response
+                if response.status_code < 500:
+                    return response
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+                last_exc = exc
+                if attempt == max_retries:
+                    raise
+            if attempt < max_retries:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
     async def post_event(self, event: EventEnvelope, dry_run: bool = True) -> dict[str, Any]:
         if dry_run:
             return {"delivered": False, "dry_run": True}
         url = f"{self.base_url}/api/events"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(url, json=event.model_dump(mode="json"))
-        return {"delivered": response.is_success or response.status_code == 409, "status_code": response.status_code}
+        try:
+            response = await self._request_with_retry(
+                "POST", url, json=event.model_dump(mode="json")
+            )
+            return {"delivered": response.is_success or response.status_code == 409, "status_code": response.status_code}
+        except Exception as exc:
+            logger.warning("post_event failed after retries: %s", exc)
+            return {"delivered": False, "error": str(exc)}
 
     def _extract_items(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -178,11 +217,17 @@ class RouterClient:
     def __init__(self, settings: Settings):
         self.base_url = settings.router_base_url.rstrip("/")
         self.timeout = settings.router_timeout_seconds
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+
+    async def close(self):
+        await self._client.aclose()
+
+    def _default_headers(self) -> dict[str, str]:
+        return inject_trace_headers()
 
     async def health(self) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_url}/health")
+            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers())
             return {"reachable": response.is_success, "status_code": response.status_code}
         except Exception as exc:
             return {"reachable": False, "error": str(exc)}
@@ -190,21 +235,23 @@ class RouterClient:
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                context_response = await client.get(f"{self.base_url}/admin/context")
-                quota_response = await client.get(f"{self.base_url}/admin/quota")
-                circuits_response = await client.get(f"{self.base_url}/admin/circuits")
-                clis_response = await client.get(f"{self.base_url}/admin/agent-clis")
-                ops_response = await client.get(f"{self.base_url}/admin/ops/summary")
+            hdrs = self._default_headers()
+            context_resp, quota_resp, circuits_resp, clis_resp, ops_resp = await asyncio.gather(
+                self._client.get(f"{self.base_url}/admin/context", headers=hdrs),
+                self._client.get(f"{self.base_url}/admin/quota", headers=hdrs),
+                self._client.get(f"{self.base_url}/admin/circuits", headers=hdrs),
+                self._client.get(f"{self.base_url}/admin/agent-clis", headers=hdrs),
+                self._client.get(f"{self.base_url}/admin/ops/summary", headers=hdrs),
+            )
 
             self._apply_snapshot_payloads(
                 snapshot=snapshot,
-                context_payload=context_response.json() if context_response.is_success else {},
-                quota_payload=quota_response.json() if quota_response.is_success else {},
-                circuits_payload=circuits_response.json() if circuits_response.is_success else {},
-                clis_payload=clis_response.json() if clis_response.is_success else {},
-                ops_payload=ops_response.json() if ops_response.is_success else {},
-                reachable=context_response.is_success,
+                context_payload=context_resp.json() if context_resp.is_success else {},
+                quota_payload=quota_resp.json() if quota_resp.is_success else {},
+                circuits_payload=circuits_resp.json() if circuits_resp.is_success else {},
+                clis_payload=clis_resp.json() if clis_resp.is_success else {},
+                ops_payload=ops_resp.json() if ops_resp.is_success else {},
+                reachable=context_resp.is_success,
             )
         except Exception:
             snapshot.reachable = False

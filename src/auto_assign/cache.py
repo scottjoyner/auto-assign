@@ -6,6 +6,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
+
+from .migration import migrate as run_migrations
 from .models import AssignmentDecision, EventEnvelope, HeartbeatRequest, utc_now
 
 
@@ -19,92 +22,27 @@ class CacheStore:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._conn
+
+    def close(self) -> None:
+        self._conn.close()
+
+    async def aconnect(self) -> aiosqlite.Connection:
+        db = await aiosqlite.connect(str(self.path))
+        db.row_factory = sqlite3.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        return db
 
     def _init_schema(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS scheduler_runs (
-                    scheduler_run_id TEXT PRIMARY KEY,
-                    started_at TEXT NOT NULL,
-                    completed_at TEXT,
-                    trigger_reason TEXT NOT NULL,
-                    dry_run INTEGER NOT NULL,
-                    evaluated_count INTEGER NOT NULL DEFAULT 0,
-                    recommended_count INTEGER NOT NULL DEFAULT 0,
-                    skipped_count INTEGER NOT NULL DEFAULT 0,
-                    error_summary TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS assignments (
-                    assignment_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    decision_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    selected_lane TEXT NOT NULL,
-                    selected_target TEXT,
-                    score REAL NOT NULL,
-                    approval_required INTEGER NOT NULL,
-                    lease_expires_at TEXT,
-                    context_revision TEXT,
-                    canonical_status TEXT,
-                    cache_only INTEGER NOT NULL DEFAULT 1,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_assignments_task_id ON assignments(task_id);
-                CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
-
-                CREATE TABLE IF NOT EXISTS heartbeats (
-                    heartbeat_id TEXT PRIMARY KEY,
-                    node_id TEXT NOT NULL,
-                    worker_id TEXT,
-                    assignment_id TEXT,
-                    status TEXT NOT NULL,
-                    received_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_heartbeats_node_id ON heartbeats(node_id);
-                CREATE INDEX IF NOT EXISTS idx_heartbeats_assignment_id ON heartbeats(assignment_id);
-
-                CREATE TABLE IF NOT EXISTS inbound_events (
-                    event_id TEXT PRIMARY KEY,
-                    event_type TEXT NOT NULL,
-                    source_service TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    subject TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    received_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_inbound_events_type ON inbound_events(event_type);
-                CREATE INDEX IF NOT EXISTS idx_inbound_events_source ON inbound_events(source_service);
-
-                CREATE TABLE IF NOT EXISTS outbox_events (
-                    event_id TEXT PRIMARY KEY,
-                    event_type TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    subject TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at TEXT,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_events(status);
-                """
-            )
+        run_migrations(self._conn)
 
     def health(self) -> dict[str, Any]:
         try:
@@ -448,7 +386,12 @@ class CacheStore:
             params.append(status)
         if lease_expires_at is not None:
             updates.append("lease_expires_at=?")
-            params.append(str(lease_expires_at))
+            if isinstance(lease_expires_at, (int, float)):
+                from datetime import datetime, timezone
+                lease_value = datetime.fromtimestamp(lease_expires_at, tz=timezone.utc).isoformat()
+            else:
+                lease_value = lease_expires_at
+            params.append(lease_value)
         params.append(assignment_id)
         with self.connect() as conn:
             cursor = conn.execute(

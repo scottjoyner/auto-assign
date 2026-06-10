@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os, mimetypes, re
+import base64, functools, os, mimetypes, re
 from typing import List, Optional, Tuple
-from flask import Flask, request, render_template, send_file, abort, url_for, jsonify, redirect
+from flask import Flask, request, render_template, send_file, abort, url_for, jsonify, redirect, Response
 import torch
 from transformers import AutoTokenizer, AutoModel
 from neo4j import GraphDatabase
@@ -10,6 +10,9 @@ from neo4j import GraphDatabase
 # ---------------------------
 # Config
 # ---------------------------
+BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER")
+BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS")
+
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "livelongandprosper")
@@ -34,11 +37,18 @@ SUGG_THRESH = float(os.getenv("SUGG_THRESH", "0.62"))
 SUGG_LIMIT_SPEAKERS = int(os.getenv("SUGG_LIMIT_SPEAKERS", "200"))
 
 # ---------------------------
-# Model (load once)
+# Model (lazy — loaded on first embed)
 # ---------------------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_NAME)
-model = AutoModel.from_pretrained(EMBED_MODEL_NAME).to(DEVICE).eval()
+_tokenizer = None
+_model = None
+
+def _get_embed_model():
+    global _tokenizer, _model
+    if _model is None:
+        _tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_NAME)
+        _model = AutoModel.from_pretrained(EMBED_MODEL_NAME).to(DEVICE).eval()
+    return _tokenizer, _model
 
 def _normalize(v: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.normalize(v, p=2, dim=1)
@@ -49,13 +59,14 @@ def _mean_pooling(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor)
 
 def embed_texts(texts: List[str], batch_size: int = EMBED_BATCH, max_length: int = 512) -> List[List[float]]:
     if not texts: return []
+    tok, mod = _get_embed_model()
     vecs = []
     with torch.no_grad():
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
-            enc = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
+            enc = tok(batch, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
             enc = {k: v.to(DEVICE) for k,v in enc.items()}
-            out = model(**enc)
+            out = mod(**enc)
             pooled = _mean_pooling(out.last_hidden_state, enc["attention_mask"])
             pooled = _normalize(pooled)
             vecs.extend(pooled.cpu().numpy().tolist())
@@ -202,6 +213,13 @@ def best_audio_for_media(path: Optional[str]) -> Optional[str]:
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+
+if BASIC_AUTH_USER and BASIC_AUTH_PASS:
+    @app.before_request
+    def _require_auth():
+        auth = request.authorization
+        if not auth or auth.username != BASIC_AUTH_USER or auth.password != BASIC_AUTH_PASS:
+            return Response("Unauthorized", 401, {"WWW-Authenticate": 'Basic realm="auto-assign"'})
 
 @app.context_processor
 def _inject_helpers():

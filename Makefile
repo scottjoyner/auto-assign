@@ -1,4 +1,4 @@
-.PHONY: install dev test lint smoke
+.PHONY: install dev test lint format smoke build docker-up docker-down
 
 install:
 	python -m pip install -e '.[dev]'
@@ -12,6 +12,18 @@ test:
 lint:
 	ruff check src tests
 
+format:
+	ruff check --fix src tests
+
 smoke:
 	python -m compileall src
 	pytest -q
+
+build:
+	docker compose build
+
+docker-up:
+	docker compose up --build
+
+docker-down:
+	docker compose down

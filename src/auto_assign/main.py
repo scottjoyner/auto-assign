@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 
 from . import __version__
+from .logging_utils import install_logging_middleware, setup_logging
+from .metrics import CONTENT_TYPE_LATEST, OUTBOX_PENDING, STALE_HEARTBEATS, generate_latest
+
+_start_time = time.time()
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
 from .control import AssignmentControlStore
@@ -38,8 +45,14 @@ def build_service(settings: Settings | None = None) -> AssignmentService:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not hasattr(app.state, "assignment_service"):
-        app.state.assignment_service = build_service()
+        svc = build_service()
+        app.state.assignment_service = svc
     yield
+    svc = getattr(app.state, "assignment_service", None)
+    if svc:
+        await svc.assistx.close()
+        await svc.router.close()
+        svc.cache.close()
 
 
 app = FastAPI(
@@ -48,6 +61,17 @@ app = FastAPI(
     description="Assignment, trigger, and heartbeat layer for AssistX.",
     lifespan=lifespan,
 )
+setup_logging()
+install_logging_middleware(app)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080,http://localhost:8090").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_assignment_service() -> AssignmentService:
@@ -55,7 +79,9 @@ def get_assignment_service() -> AssignmentService:
 
 
 def get_assignment_control(service: AssignmentService) -> AssignmentControlStore:
-    return AssignmentControlStore(service.settings.sqlite_path)
+    if not hasattr(service, "_control_store"):
+        service._control_store = AssignmentControlStore(service.settings.sqlite_path)
+    return service._control_store
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -64,15 +90,24 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
     router = await service.router.health()
     cache = service.cache.health()
     control = get_assignment_control(service).get()
-    status = "ok" if cache.get("reachable") else "degraded"
-    if not assistx.get("reachable"):
-        status = "degraded"
+    deps_ok = cache.get("reachable") and assistx.get("reachable")
+    status = "ok" if deps_ok else "degraded"
+
+    outbox = cache.outbox_summary() if hasattr(cache, "outbox_summary") else {}
+    OUTBOX_PENDING.set(int(outbox.get("pending", 0)))
+    stale = service.list_stale_heartbeats(limit=1)
+    STALE_HEARTBEATS.set(stale.get("count", 0))
+
     return HealthResponse(
+        ok=deps_ok,
         status=status,
         version=__version__,
-        assistx=assistx,
-        router=router,
-        cache=cache,
+        uptime=time.time() - _start_time,
+        deps={
+            "assistx": assistx,
+            "router": router,
+            "cache": cache,
+        },
         scheduler={
             "enabled": service.settings.scheduler_enabled,
             "last_tick_at": service.last_tick_at,
@@ -81,6 +116,11 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
             "control": control,
         },
     )
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics():
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/assignment-control")

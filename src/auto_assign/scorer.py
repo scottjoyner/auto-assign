@@ -45,7 +45,7 @@ class AssignmentScorer:
         normalized_status = (canonical_status or "").lower()
 
         if normalized_status in TERMINAL_STATUSES:
-            return self._blocked(
+            return self.blocked(
                 candidate,
                 router,
                 canonical_status,
@@ -53,7 +53,7 @@ class AssignmentScorer:
                 f"AssistX/Neo4j reports terminal state: {canonical_status}",
             )
         if normalized_status in ACTIVE_ASSIGNMENT_STATUSES:
-            return self._blocked(
+            return self.blocked(
                 candidate,
                 router,
                 canonical_status,
@@ -166,30 +166,32 @@ class AssignmentScorer:
         sensitive: bool,
         local_only: bool,
     ) -> tuple[float, list[str]]:
-        base_by_lane = {
-            Lane.PAPERCLIP: 0.82,
-            Lane.LOCAL_ONLY: 0.78,
-            Lane.ROUTER_MODEL: 0.66,
-            Lane.FREE_API: 0.55,
-            Lane.DIRECT_WORKER: 0.20,
-        }
+        base_by_lane = {}
+        for pair in self.settings.lane_base_scores.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                lane_key = k.strip().upper()
+                try:
+                    base_by_lane[Lane[lane_key]] = float(v.strip())
+                except (KeyError, ValueError):
+                    pass
         score = base_by_lane.get(lane, 0.0)
         reasons = []
 
         if lane == Lane.PAPERCLIP:
             reasons.append("paperclip is the current approved cutover execution lane")
         if lane == Lane.LOCAL_ONLY and (sensitive or local_only):
-            score += 0.1
+            score += self.settings.local_only_boost
             reasons.append("local-only lane preferred for sensitive or local-only work")
         if lane == Lane.ROUTER_MODEL:
             reasons.append("router model lane is available for planning/drafting/review")
         if lane == Lane.FREE_API:
             reasons.append("free API lane is eligible and does not violate reserve policy")
         if candidate.priority in {"critical", "repo_critical", "interactive"}:
-            score += 0.05
+            score += self.settings.priority_boost
             reasons.append(f"priority boost applied for {candidate.priority}")
         if candidate.retry_count:
-            penalty = min(candidate.retry_count * 0.05, 0.2)
+            penalty = min(candidate.retry_count * self.settings.retry_penalty_per_attempt, self.settings.retry_penalty_max)
             score -= penalty
             reasons.append(f"retry penalty applied: {candidate.retry_count}")
         if router.context_revision:
@@ -205,7 +207,7 @@ class AssignmentScorer:
             Lane.DIRECT_WORKER: "direct_worker",
             Lane.BLOCKED: "blocked",
         }
-        return targets[lane]
+        return targets.get(lane, "unknown")
 
     def _quota_preserve_mode(self, router: RouterSnapshot) -> bool:
         if not isinstance(router.quota, dict):
@@ -247,7 +249,7 @@ class AssignmentScorer:
             cache_only=True,
         )
 
-    def _blocked(
+    def blocked(
         self,
         candidate: AssignmentCandidate,
         router: RouterSnapshot,
