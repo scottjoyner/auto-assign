@@ -242,6 +242,22 @@ class AssignmentService:
             "cache_role": "outbox_replay_buffer",
         }
 
+    def _assignment_event_context(self, assignment_id: str, assignment: dict, **overrides) -> dict:
+        context = {
+            "assignment_id": assignment_id,
+            "task_id": assignment.get("task_id"),
+            "route_id": assignment.get("route_id"),
+            "worker_id": assignment.get("worker_id"),
+            "node_id": assignment.get("node_id"),
+            "status": assignment.get("status"),
+            "lease_seconds": assignment.get("lease_seconds"),
+            "lease_expires_at": assignment.get("lease_expires_at"),
+        }
+        for key, value in overrides.items():
+            if value is not None:
+                context[key] = value
+        return {key: value for key, value in context.items() if value is not None}
+
     async def release_assignment(self, assignment_id: str, request: AssignmentReleaseRequest) -> dict:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
@@ -255,8 +271,7 @@ class AssignmentService:
             idempotency_key=f"{EventType.ASSIGNMENT_RELEASED}:{assignment_id}:{request.reason}:{request.retryable}",
             subject=assignment.get("task_id", assignment_id),
             payload={
-                "assignment_id": assignment_id,
-                "task_id": assignment.get("task_id"),
+                **self._assignment_event_context(assignment_id, assignment),
                 "reason": request.reason,
                 "retryable": request.retryable,
                 "dry_run": request.dry_run,
@@ -513,14 +528,19 @@ class AssignmentService:
             subject=request.task_id,
             correlation_id=request.correlation_id,
             payload={
-                "assignment_id": assignment_id,
-                "task_id": request.task_id,
+                **self._assignment_event_context(
+                    assignment_id,
+                    assignment,
+                    task_id=request.task_id,
+                    worker_id=request.worker_id,
+                    node_id=request.node_id,
+                    status="running",
+                    lease_seconds=request.lease_seconds,
+                    lease_expires_at=lease_expires,
+                    route_id=request.route_id,
+                ),
                 "route_id": request.route_id,
-                "worker_id": request.worker_id,
-                "node_id": request.node_id,
                 "capabilities": request.capabilities,
-                "lease_seconds": request.lease_seconds,
-                "lease_expires_at": lease_expires,
                 "correlation_id": request.correlation_id,
                 **request.metadata,
             },
@@ -550,9 +570,14 @@ class AssignmentService:
             subject=request.task_id,
             correlation_id=request.correlation_id,
             payload={
-                "assignment_id": assignment_id,
-                "task_id": request.task_id,
-                "worker_id": request.worker_id,
+                **self._assignment_event_context(
+                    assignment_id,
+                    assignment,
+                    task_id=request.task_id,
+                    worker_id=request.worker_id,
+                    status=status,
+                    route_id=assignment.get("route_id"),
+                ),
                 "status": request.status,
                 "summary": request.summary,
                 "artifacts": request.artifacts,
@@ -574,14 +599,16 @@ class AssignmentService:
         self.cache.record_heartbeat(heartbeat_id, heartbeat)
 
         lease_renewed = False
+        renewed_lease_expires = None
+        assignment = None
         if heartbeat.assignment_id:
             assignment = self.cache.get_assignment(heartbeat.assignment_id)
             if assignment and assignment.get("worker_id") == heartbeat.worker_id:
-                lease_expires = utc_now().timestamp() + self.settings.default_lease_seconds
+                renewed_lease_expires = utc_now().timestamp() + self.settings.default_lease_seconds
                 self.cache.update_assignment_status(
                     heartbeat.assignment_id,
                     status=assignment.get("status", "running"),
-                    lease_expires_at=lease_expires,
+                    lease_expires_at=renewed_lease_expires,
                 )
                 lease_renewed = True
 
@@ -593,6 +620,16 @@ class AssignmentService:
                 "heartbeat_id": heartbeat_id,
                 "lease_renewed": lease_renewed,
                 **heartbeat.model_dump(mode="json"),
+                **(
+                    self._assignment_event_context(
+                        heartbeat.assignment_id,
+                        assignment,
+                        status=assignment.get("status", "running") if assignment else heartbeat.status,
+                        lease_expires_at=renewed_lease_expires if lease_renewed else (assignment.get("lease_expires_at") if assignment else None),
+                    )
+                    if heartbeat.assignment_id and assignment
+                    else {}
+                ),
             },
         )
         self.cache.enqueue_event(event)
@@ -610,9 +647,7 @@ class AssignmentService:
                     idempotency_key=f"{EventType.ASSIGNMENT_EXPIRED}:{assignment_id}:{utc_now().isoformat()}",
                     subject=assignment.get("task_id", assignment_id),
                     payload={
-                        "assignment_id": assignment_id,
-                        "task_id": assignment.get("task_id"),
-                        "worker_id": assignment.get("worker_id"),
+                        **self._assignment_event_context(assignment_id, assignment),
                         "reason": "lease_expired",
                     },
                 )

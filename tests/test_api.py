@@ -305,7 +305,34 @@ def test_release_assignment_enqueues_graph_event(tmp_path):
     assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 2}
 
 
+def test_claim_assignment_emits_enriched_lease_context(tmp_path):
+    client = make_client(tmp_path)
+    assignment = create_assignment(client, "ASS-claim")
+
+    response = client.post(
+        f"/api/assignments/{assignment['assignment_id']}/claim",
+        json={
+            "correlation_id": "corr-claim",
+            "task_id": assignment["task_id"],
+            "route_id": "route-claim",
+            "worker_id": "worker-claim",
+            "node_id": "node-claim",
+            "capabilities": ["python"],
+            "lease_seconds": 1200,
+        },
+    )
+
+    assert response.status_code == 200
+    outbox = client.get("/api/outbox/events").json()["events"]
+    claimed = next(event for event in outbox if event["payload"].get("assignment_id") == assignment["assignment_id"] and event["event_type"] == "assignment.claimed")
+    assert claimed["payload"]["node_id"] == "node-claim"
+    assert claimed["payload"]["worker_id"] == "worker-claim"
+    assert claimed["payload"]["lease_seconds"] == 1200
+    assert claimed["payload"]["lease_expires_at"] is not None
+
+
 def test_approve_missing_assignment_returns_404(tmp_path):
+
     client = make_client(tmp_path)
 
     response = client.post(
