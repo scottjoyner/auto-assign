@@ -38,7 +38,7 @@ class Settings:
     default_lease_seconds: int = _int_env("AUTO_ASSIGN_DEFAULT_LEASE_SECONDS", 900)
     stale_heartbeat_seconds: int = _int_env("AUTO_ASSIGN_STALE_HEARTBEAT_SECONDS", 120)
     dispatch_enabled: bool = _bool_env("AUTO_ASSIGN_DISPATCH_ENABLED", False)
-    direct_workers_enabled: bool = _bool_env("AUTO_ASSIGN_DIRECT_WORKERS_ENABLED", True)
+    direct_workers_enabled: bool = _bool_env("AUTO_ASSIGN_DIRECT_WORKERS_ENABLED", False)
     log_payload_bodies: bool = _bool_env("AUTO_ASSIGN_LOG_PAYLOAD_BODIES", False)
 
     # Scorer lane base scores (comma-separated "lane=score" pairs)
