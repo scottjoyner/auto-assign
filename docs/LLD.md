@@ -161,7 +161,7 @@ Request:
   "task_id": "ASS-28",
   "dry_run": true,
   "force_refresh_context": true,
-  "candidate_lanes": ["paperclip", "router_model", "local_only", "free_api"]
+  "candidate_lanes": ["router_model", "local_only", "free_api"]
 }
 ```
 
@@ -172,12 +172,12 @@ Response:
   "assignment_id": "assign_ASS-28_001",
   "task_id": "ASS-28",
   "status": "recommended",
-  "selected_lane": "paperclip",
-  "selected_target": "hermes_local",
+  "selected_lane": "router_model",
+  "selected_target": "auto-router",
   "approval_required": false,
   "score": 0.87,
   "reasons": [
-    "paperclip is current approved cutover lane",
+    "router_model is the current execution lane",
     "task is non-sensitive",
     "worker heartbeat is fresh"
   ],
@@ -306,7 +306,7 @@ Request:
 ```json
 {
   "node_id": "x1-370",
-  "worker_id": "paperclip-hermes-local",
+  "worker_id": "router-hermes-local",
   "assignment_id": "assign_ASS-28_001",
   "status": "running",
   "capabilities": ["chat", "code", "local_model"],
@@ -477,7 +477,7 @@ The exact weights should be config-driven later, but deterministic defaults are 
 
 Initial default preference:
 
-1. `paperclip` for current cutover execution tasks.
+1. `router_model` for current execution tasks.
 2. `local_only` for sensitive/private tasks that can run locally.
 3. `router_model` for planning/drafting/review tasks.
 4. `free_api` for non-sensitive backlog burn-down when quota is surplus.
@@ -544,11 +544,11 @@ Useful endpoints:
   "assignment_id": "assign_ASS-28_001",
   "task_id": "ASS-28",
   "decision_id": "decision_ASS-28_001",
-  "selected_lane": "paperclip",
-  "selected_target": "hermes_local",
+  "selected_lane": "router_model",
+  "selected_target": "auto-router",
   "score": 0.87,
   "approval_required": false,
-  "reasons": ["paperclip is current approved cutover lane"],
+  "reasons": ["router_model is the current execution lane"],
   "skipped_lanes": [
     {"lane": "direct_worker", "reason": "direct workers disabled"}
   ],
@@ -563,10 +563,10 @@ Useful endpoints:
 {
   "assignment_id": "assign_ASS-28_001",
   "task_id": "ASS-28",
-  "lane": "paperclip",
-  "target": "hermes_local",
+  "lane": "router_model",
+  "target": "auto-router",
   "lease_expires_at": "2026-05-30T15:15:00Z",
-  "dispatch_ref": "paperclip:ASS-28"
+  "dispatch_ref": "router_model:ASS-28"
 }
 ```
 
@@ -577,7 +577,7 @@ Useful endpoints:
   "task_id": "ASS-29",
   "reason_code": "approval_required",
   "reason": "non-Scott or high-risk task requires approval before dispatch",
-  "candidate_lanes": ["paperclip", "router_model"],
+  "candidate_lanes": ["router_model", "local_only"],
   "context_revision": "router-rev-123"
 }
 ```
@@ -587,7 +587,7 @@ Useful endpoints:
 ```json
 {
   "node_id": "x1-370",
-  "worker_id": "paperclip-hermes-local",
+  "worker_id": "router-hermes-local",
   "assignment_id": "assign_ASS-28_001",
   "status": "running",
   "received_at": "2026-05-30T15:02:00Z",
@@ -651,7 +651,7 @@ Minimum unit/integration tests:
 
 | Test area | Required checks |
 |---|---|
-| Scoring | Lane selected with correct reasons for paperclip, local-only, free API, blocked, approval-required. |
+| Scoring | Lane selected with correct reasons for router_model, local-only, free API, blocked, approval-required. |
 | Privacy | Cloud/free API skipped for local-only/private/voice-auth work. |
 | Idempotency | Same task/event does not create duplicate active assignments. |
 | Leases | Expired lease releases assignment and emits event. |

@@ -168,7 +168,7 @@ Candidate lane categories:
 
 | Lane | Description | Default posture |
 |---|---|---|
-| `paperclip` | Current supported non-realtime execution path through Paperclip / `hermes_local`. | Preferred for execution cutover. |
+| `router_model` | Current supported non-realtime execution path through auto-router. | Preferred for execution. |
 | `router_model` | LLM request routed through `auto-router`. | Allowed for planning/drafting when privacy/quota policy permits. |
 | `local_only` | Local LM Studio or local tools. | Required for sensitive/private work. |
 | `free_api` | Hosted free quota providers. | Allowed only for non-sensitive work and after reserve checks. |

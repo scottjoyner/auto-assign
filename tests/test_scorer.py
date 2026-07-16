@@ -43,13 +43,13 @@ def test_sensitive_task_blocks_hosted_free_api():
     candidate = AssignmentCandidate(
         task_id="ASS-sensitive",
         sensitive=True,
-        allowed_lanes=[Lane.FREE_API, Lane.PAPERCLIP],
+        allowed_lanes=[Lane.FREE_API, Lane.LOCAL_ONLY],
     )
     router = RouterSnapshot(reachable=True, context_revision="rev-1")
 
     decision = scorer.score(candidate, router)
 
-    assert decision.selected_lane == Lane.PAPERCLIP
+    assert decision.selected_lane == Lane.LOCAL_ONLY
     assert any(reason.reason_code == "privacy_cloud_denied" for reason in decision.skipped_lanes)
 
 
@@ -58,7 +58,7 @@ def test_approval_required_blocks_dispatch_recommendation():
     candidate = AssignmentCandidate(
         task_id="ASS-approval",
         approval_required=True,
-        allowed_lanes=[Lane.PAPERCLIP, Lane.ROUTER_MODEL],
+        allowed_lanes=[Lane.ROUTER_MODEL, Lane.LOCAL_ONLY],
     )
     router = RouterSnapshot(reachable=True)
 
@@ -69,23 +69,23 @@ def test_approval_required_blocks_dispatch_recommendation():
     assert decision.approval_required is True
 
 
-def test_router_unavailable_blocks_router_and_cloud_but_keeps_paperclip():
+def test_router_unavailable_blocks_router_and_cloud_but_keeps_local_only():
     scorer = AssignmentScorer(Settings())
     candidate = AssignmentCandidate(
         task_id="ASS-router-down",
-        allowed_lanes=[Lane.ROUTER_MODEL, Lane.FREE_API, Lane.PAPERCLIP],
+        allowed_lanes=[Lane.ROUTER_MODEL, Lane.FREE_API, Lane.LOCAL_ONLY],
     )
     router = RouterSnapshot(reachable=False)
 
     decision = scorer.score(candidate, router)
 
-    assert decision.selected_lane == Lane.PAPERCLIP
+    assert decision.selected_lane == Lane.LOCAL_ONLY
     assert {reason.reason_code for reason in decision.skipped_lanes} >= {"router_unavailable"}
 
 
 def test_neo4j_terminal_state_wins_over_local_candidate():
     scorer = AssignmentScorer(Settings())
-    candidate = AssignmentCandidate(task_id="ASS-done", allowed_lanes=[Lane.PAPERCLIP])
+    candidate = AssignmentCandidate(task_id="ASS-done", allowed_lanes=[Lane.ROUTER_MODEL])
     router = RouterSnapshot(reachable=True)
 
     decision = scorer.score(candidate, router, canonical_status="done")
@@ -98,7 +98,7 @@ def test_neo4j_terminal_state_wins_over_local_candidate():
 
 def test_neo4j_active_assignment_blocks_duplicate():
     scorer = AssignmentScorer(Settings())
-    candidate = AssignmentCandidate(task_id="ASS-running", allowed_lanes=[Lane.PAPERCLIP])
+    candidate = AssignmentCandidate(task_id="ASS-running", allowed_lanes=[Lane.ROUTER_MODEL])
     router = RouterSnapshot(reachable=True)
 
     decision = scorer.score(candidate, router, canonical_status="running")
@@ -110,7 +110,7 @@ def test_neo4j_active_assignment_blocks_duplicate():
 
 def test_assignment_and_decision_ids_are_deterministic_for_same_inputs():
     scorer = AssignmentScorer(Settings())
-    candidate = AssignmentCandidate(task_id="ASS-deterministic", allowed_lanes=[Lane.PAPERCLIP])
+    candidate = AssignmentCandidate(task_id="ASS-deterministic", allowed_lanes=[Lane.ROUTER_MODEL])
     router = RouterSnapshot(reachable=True, context_revision="rev-stable")
 
     first = scorer.score(candidate, router)
@@ -135,7 +135,7 @@ def test_decision_id_changes_when_router_context_revision_changes():
 
 def test_decision_idempotency_key_is_status_neutral_for_recommended_decision():
     scorer = AssignmentScorer(Settings())
-    candidate = AssignmentCandidate(task_id="ASS-key", allowed_lanes=[Lane.PAPERCLIP])
+    candidate = AssignmentCandidate(task_id="ASS-key", allowed_lanes=[Lane.ROUTER_MODEL])
 
     decision = scorer.score(candidate, RouterSnapshot(reachable=True))
 
@@ -152,3 +152,50 @@ def test_decision_idempotency_key_is_status_neutral_for_blocked_decision():
     assert decision.status == AssignmentStatus.BLOCKED
     assert decision.idempotency_key == "assign.assignment.decision:ASS-block-key:ready:unknown"
     assert "recommended" not in decision.idempotency_key
+
+
+def test_direct_worker_lane_scored_when_enabled():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(
+        task_id="ASS-direct-worker",
+        allowed_lanes=[Lane.DIRECT_WORKER],
+    )
+    router = RouterSnapshot(reachable=False)
+
+    decision = scorer.score(candidate, router)
+
+    assert decision.selected_lane == Lane.DIRECT_WORKER
+    assert decision.status == AssignmentStatus.RECOMMENDED
+    assert any("direct worker" in r for r in decision.reasons)
+
+
+def test_direct_worker_lane_skips_when_disabled():
+    settings = Settings()
+    object.__setattr__(settings, "direct_workers_enabled", False)
+    scorer = AssignmentScorer(settings)
+    candidate = AssignmentCandidate(
+        task_id="ASS-direct-disabled",
+        allowed_lanes=[Lane.DIRECT_WORKER],
+    )
+    router = RouterSnapshot(reachable=False)
+
+    decision = scorer.score(candidate, router)
+
+    assert decision.status == AssignmentStatus.BLOCKED
+    assert any(r.reason_code == "direct_workers_disabled" for r in decision.skipped_lanes)
+
+
+def test_direct_worker_lane_preferred_for_local_only_task():
+    scorer = AssignmentScorer(Settings())
+    candidate = AssignmentCandidate(
+        task_id="ASS-dw-local",
+        local_only=True,
+        allow_cloud=False,
+        allowed_lanes=[Lane.DIRECT_WORKER, Lane.ROUTER_MODEL, Lane.FREE_API, Lane.LOCAL_ONLY],
+    )
+    router = RouterSnapshot(reachable=True, context_revision="rev-1")
+
+    decision = scorer.score(candidate, router)
+
+    assert decision.selected_lane in {Lane.DIRECT_WORKER, Lane.LOCAL_ONLY}
+    assert decision.status == AssignmentStatus.RECOMMENDED

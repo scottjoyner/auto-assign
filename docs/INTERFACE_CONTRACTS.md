@@ -269,7 +269,7 @@ Request:
   "task_id": "task-123",
   "candidate": null,
   "dry_run": true,
-  "candidate_lanes": ["paperclip", "router_model", "local_only", "free_api", "direct_worker"],
+  "candidate_lanes": ["router_model", "local_only", "free_api", "direct_worker"],
   "force_refresh_context": false
 }
 ```
@@ -281,12 +281,12 @@ Response:
   "assignment_id": "assign_task-123_abc123",
   "task_id": "task-123",
   "status": "recommended",
-  "selected_lane": "paperclip",
+  "selected_lane": "router_model",
   "selected_target": "hermes_local",
   "approval_required": false,
   "score": 0.87,
   "reasons": [
-    "paperclip is current approved cutover lane",
+    "router_model is the current execution lane",
     "task is non-sensitive",
     "worker heartbeat is fresh"
   ],
@@ -344,7 +344,7 @@ Initial P2 shape:
 ```json
 {
   "node_id": "x1-370",
-  "worker_id": "paperclip-hermes-local",
+  "worker_id": "router-hermes-local",
   "assignment_id": "assign_task-123_abc123",
   "status": "running",
   "capabilities": ["code", "terminal", "docs"],
@@ -380,11 +380,11 @@ Modes:
   "assignment_id": "assign_task-123_abc123",
   "task_id": "task-123",
   "decision_id": "decision_task-123_abc123",
-  "selected_lane": "paperclip",
+  "selected_lane": "router_model",
   "selected_target": "hermes_local",
   "score": 0.87,
   "approval_required": false,
-  "reasons": ["paperclip is current approved cutover lane"],
+  "reasons": ["router_model is the current execution lane"],
   "skipped_lanes": [
     {"lane": "direct_worker", "reason_code": "disabled", "reason": "direct workers disabled"}
   ],
@@ -400,7 +400,7 @@ Modes:
   "task_id": "task-123",
   "reason_code": "privacy_cloud_denied",
   "reason": "local-only/private task cannot use hosted free API lane",
-  "candidate_lanes": ["paperclip", "router_model", "free_api"],
+  "candidate_lanes": ["router_model", "free_api"],
   "context_revision": "router-rev-123",
   "dry_run": true
 }
@@ -428,7 +428,7 @@ Modes:
 {
   "heartbeat_id": "hb_uuid",
   "node_id": "x1-370",
-  "worker_id": "paperclip-hermes-local",
+  "worker_id": "router-hermes-local",
   "assignment_id": "assign_task-123_abc123",
   "status": "running",
   "capabilities": ["docs", "code"],

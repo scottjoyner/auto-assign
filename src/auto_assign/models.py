@@ -13,10 +13,14 @@ def utc_now() -> datetime:
 
 
 class AssignmentStatus(StrEnum):
+    # NOTE: These are local cache statuses, mapped from AssistX canonical status.
+    # Never treated as source of truth — AssistX Neo4j is the canonical task state.
+    # Sync direction is always AssistX → auto-assign (read from AssistX event_status).
     RECOMMENDED = "recommended"
     APPROVAL_REQUIRED = "approval_required"
     RESERVED = "reserved"
     DISPATCHED = "dispatched"
+    IN_PROGRESS = "in_progress"
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
@@ -43,14 +47,20 @@ class Lane(StrEnum):
 class EventEnvelope(BaseModel):
     event_id: str = Field(default_factory=lambda: f"evt_{uuid4().hex}")
     event_type: str
+    source_repo: str = "auto-assign"
     source_service: str = "auto-assign"
+    node_id: str = "auto-assign"
     occurred_at: datetime = Field(default_factory=utc_now)
     idempotency_key: str
-    schema_version: str = "assign.v1"
-    subject: str
+    schema_version: str = "1.0"
+    subject: str | dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
-    privacy: list[str] = Field(default_factory=list)
+    artifact_refs: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    privacy: dict[str, Any] = Field(default_factory=lambda: {"pii": False, "privacy_class": "public", "retention_class": "keep"})
     correlation_id: str | None = None
+    actor: dict[str, Any] | None = None
+    links: dict[str, Any] | None = None
 
 
 class AssignmentCandidate(BaseModel):
@@ -70,7 +80,7 @@ class AssignmentCandidate(BaseModel):
     sensitive: bool = False
     allow_cloud: bool = True
     required_capabilities: list[str] = Field(default_factory=list)
-    allowed_lanes: list[Lane] = Field(default_factory=lambda: [Lane.PAPERCLIP, Lane.ROUTER_MODEL])
+    allowed_lanes: list[Lane] = Field(default_factory=lambda: [Lane.ROUTER_MODEL, Lane.LOCAL_ONLY, Lane.FREE_API])
     retry_count: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     summary: str | None = None
@@ -137,7 +147,7 @@ class AssignmentEvaluateRequest(BaseModel):
     task_id: str
     dry_run: bool = True
     force_refresh_context: bool = True
-    candidate_lanes: list[Lane] = Field(default_factory=lambda: [Lane.PAPERCLIP, Lane.ROUTER_MODEL, Lane.LOCAL_ONLY, Lane.FREE_API])
+    candidate_lanes: list[Lane] = Field(default_factory=lambda: [Lane.ROUTER_MODEL, Lane.LOCAL_ONLY, Lane.FREE_API])
 
 
 class AssignmentApprovalRequest(BaseModel):
@@ -165,6 +175,7 @@ class HeartbeatRequest(BaseModel):
     node_id: str
     worker_id: str | None = None
     assignment_id: str | None = None
+    correlation_id: str | None = None
     status: str = "online"
     capabilities: list[str] = Field(default_factory=list)
     services: list[dict[str, Any]] = Field(default_factory=list)

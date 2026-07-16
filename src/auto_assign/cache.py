@@ -6,8 +6,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
-
 from .migration import migrate as run_migrations
 from .models import AssignmentDecision, EventEnvelope, HeartbeatRequest, utc_now
 
@@ -33,13 +31,6 @@ class CacheStore:
 
     def close(self) -> None:
         self._conn.close()
-
-    async def aconnect(self) -> aiosqlite.Connection:
-        db = await aiosqlite.connect(str(self.path))
-        db.row_factory = sqlite3.Row
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("PRAGMA busy_timeout=5000")
-        return db
 
     def _init_schema(self) -> None:
         run_migrations(self._conn)
@@ -112,7 +103,8 @@ class CacheStore:
                     context_revision, canonical_status, cache_only, idempotency_key,
                     payload_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(idempotency_key) DO UPDATE SET
+                ON CONFLICT(assignment_id) DO UPDATE SET
+                    task_id=excluded.task_id,
                     decision_id=excluded.decision_id,
                     status=excluded.status,
                     selected_lane=excluded.selected_lane,
@@ -123,6 +115,7 @@ class CacheStore:
                     context_revision=excluded.context_revision,
                     canonical_status=excluded.canonical_status,
                     cache_only=excluded.cache_only,
+                    idempotency_key=excluded.idempotency_key,
                     payload_json=excluded.payload_json,
                     updated_at=excluded.updated_at
                 """,
@@ -211,8 +204,14 @@ class CacheStore:
             ).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def _subject_storage_value(self, subject: Any) -> str:
+        if isinstance(subject, str):
+            return subject
+        return json.dumps(subject, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
     def record_inbound_event(self, event: EventEnvelope) -> None:
         now = utc_now().isoformat()
+        subject = self._subject_storage_value(event.subject)
         with self.connect() as conn:
             conn.execute(
                 """
@@ -233,7 +232,7 @@ class CacheStore:
                     event.event_type,
                     event.source_service,
                     event.idempotency_key,
-                    event.subject,
+                    subject,
                     event.model_dump_json(),
                     now,
                     now,
@@ -292,7 +291,7 @@ class CacheStore:
                     event.event_id,
                     event.event_type,
                     event.idempotency_key,
-                    event.subject,
+                    self._subject_storage_value(event.subject),
                     event.model_dump_json(),
                     now,
                     now,

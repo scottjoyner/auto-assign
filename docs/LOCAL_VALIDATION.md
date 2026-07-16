@@ -73,7 +73,7 @@ curl -X POST http://localhost:8090/api/assignments/evaluate \
   -d '{
     "task_id": "ASS-local-smoke",
     "dry_run": true,
-    "candidate_lanes": ["paperclip", "router_model", "free_api"]
+    "candidate_lanes": ["router_model", "local_only", "free_api"],
   }' | jq
 ```
 

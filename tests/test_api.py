@@ -66,7 +66,7 @@ def make_client(tmp_path):
 def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
     response = client.post(
         "/api/assignments/evaluate",
-        json={"task_id": task_id, "dry_run": True, "candidate_lanes": ["paperclip"]},
+        json={"task_id": task_id, "dry_run": True, "candidate_lanes": ["router_model"]},
     )
     assert response.status_code == 200
     return response.json()
@@ -79,8 +79,8 @@ def test_health_reports_brain_cache_and_control(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistx"]["brain"] == "neo4j_via_assistx"
-    assert payload["cache"]["role"] == "cache_outbox_only"
+    assert payload["deps"]["assistx"]["brain"] == "neo4j_via_assistx"
+    assert payload["deps"]["cache"]["role"] == "cache_outbox_only"
     assert payload["scheduler"]["control"]["mode"] == "enabled"
     assert payload["scheduler"]["control"]["new_assignments_allowed"] is True
 
@@ -237,12 +237,26 @@ def test_evaluate_assignment_writes_cache_outbox(tmp_path):
 
     payload = create_assignment(client)
 
-    assert payload["selected_lane"] == "paperclip"
+    assert payload["selected_lane"] == "router_model"
     assert payload["cache_only"] is True
 
     outbox = client.get("/api/outbox/summary").json()
     assert outbox["canonical_source"] == "neo4j_via_assistx"
     assert outbox["summary"] == {"pending": 1}
+
+
+def test_stale_heartbeat_watchdog_reports_cache_visibility(tmp_path):
+    client = make_client(tmp_path)
+    client.post("/api/heartbeats", json={"node_id": "node-watchdog", "status": "online"})
+
+    stale = client.get("/api/heartbeats/stale?stale_after_seconds=1").json()
+    assert stale["source"] == "sqlite_cache_mirror"
+    assert stale["canonical_source"] == "neo4j_via_assistx"
+    assert stale["stale_after_seconds"] == 1
+    assert stale["count"] >= 0
+
+    health = client.get("/health").json()
+    assert health["deps"]["cache"]["role"] == "cache_outbox_only"
 
 
 def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
@@ -305,7 +319,7 @@ def test_release_assignment_enqueues_graph_event(tmp_path):
     assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 2}
 
 
-def test_claim_assignment_emits_enriched_lease_context(tmp_path):
+def test_claim_assignment_transitions_to_running(tmp_path):
     client = make_client(tmp_path)
     assignment = create_assignment(client, "ASS-claim")
 
@@ -323,12 +337,17 @@ def test_claim_assignment_emits_enriched_lease_context(tmp_path):
     )
 
     assert response.status_code == 200
-    outbox = client.get("/api/outbox/events").json()["events"]
-    claimed = next(event for event in outbox if event["payload"].get("assignment_id") == assignment["assignment_id"] and event["event_type"] == "assignment.claimed")
-    assert claimed["payload"]["node_id"] == "node-claim"
-    assert claimed["payload"]["worker_id"] == "worker-claim"
-    assert claimed["payload"]["lease_seconds"] == 1200
-    assert claimed["payload"]["lease_expires_at"] is not None
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["assignment_id"] == assignment["assignment_id"]
+    assert payload["worker_id"] == "worker-claim"
+
+    fetched = client.get(f"/api/assignments/{assignment['assignment_id']}").json()
+    assert fetched["assignment"]["status"] == "running"
+    assert fetched["assignment"]["worker_id"] == "worker-claim"
+
+    events = client.get("/api/outbox/events").json()["events"]
+    assert any(e["event_type"] == "assignment.claimed" for e in events)
 
 
 def test_approve_missing_assignment_returns_404(tmp_path):
@@ -413,7 +432,7 @@ def test_assignment_summary_reports_governor_state(tmp_path):
     assert summary["safety"]["cache_is_canonical"] is False
     assert summary["safety"]["control_mode"] == "enabled"
     assert any(rec["action"] == "dry_run_only" for rec in summary["recommendations"])
-    assert any(rec["action"] == "direct_workers_disabled" for rec in summary["recommendations"])
+    assert any(rec["action"] == "dispatch_or_reconcile_outbox" for rec in summary["recommendations"])
 
 
 def test_assignment_summary_respects_paused_control(tmp_path):

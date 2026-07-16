@@ -24,6 +24,10 @@ SENSITIVE_PRIVACY_LABELS = {
     "enrollment_sample",
 }
 HOSTED_LANES = {Lane.FREE_API}
+# NOTE: These status checks mirror AssistX canonical states.
+# AssistX Neo4j is the source of truth for task lifecycle.
+# These are local cache optimizations to avoid round-trips.
+# If there's a mismatch, AssistX's answer wins.
 TERMINAL_STATUSES = {"done", "cancelled", "failed_terminal", "terminal", "complete", "completed"}
 ACTIVE_ASSIGNMENT_STATUSES = {"reserved", "dispatched", "running", "claimed", "claimed_passive"}
 
@@ -124,6 +128,14 @@ class AssignmentScorer:
                     reason="sensitive, local-only, or cloud-disallowed work cannot use hosted/free API lanes",
                 )
             )
+        if lane == Lane.PAPERCLIP:
+            skips.append(
+                SkipReason(
+                    lane=lane,
+                    reason_code="deprecated_execution_lane",
+                    reason="deprecated execution lane; use router_model, local_only, or free_api",
+                )
+            )
         if lane == Lane.ROUTER_MODEL and (local_only or not candidate.allow_cloud):
             skips.append(
                 SkipReason(
@@ -137,7 +149,7 @@ class AssignmentScorer:
                 SkipReason(
                     lane=lane,
                     reason_code="direct_workers_disabled",
-                    reason="direct worker lane is disabled by default",
+                    reason="direct worker lane is disabled by configuration",
                 )
             )
         if lane in {Lane.FREE_API, Lane.ROUTER_MODEL} and not router.reachable:
@@ -178,8 +190,6 @@ class AssignmentScorer:
         score = base_by_lane.get(lane, 0.0)
         reasons = []
 
-        if lane == Lane.PAPERCLIP:
-            reasons.append("paperclip is the current approved cutover execution lane")
         if lane == Lane.LOCAL_ONLY and (sensitive or local_only):
             score += self.settings.local_only_boost
             reasons.append("local-only lane preferred for sensitive or local-only work")
@@ -187,6 +197,8 @@ class AssignmentScorer:
             reasons.append("router model lane is available for planning/drafting/review")
         if lane == Lane.FREE_API:
             reasons.append("free API lane is eligible and does not violate reserve policy")
+        if lane == Lane.DIRECT_WORKER:
+            reasons.append("direct worker lane is available for local execution")
         if candidate.priority in {"critical", "repo_critical", "interactive"}:
             score += self.settings.priority_boost
             reasons.append(f"priority boost applied for {candidate.priority}")
@@ -200,7 +212,7 @@ class AssignmentScorer:
 
     def _target_for_lane(self, lane: Lane) -> str:
         targets = {
-            Lane.PAPERCLIP: "hermes_local",
+            Lane.PAPERCLIP: "deprecated",
             Lane.LOCAL_ONLY: "local_only",
             Lane.ROUTER_MODEL: "auto-router",
             Lane.FREE_API: "auto-router/free_api",

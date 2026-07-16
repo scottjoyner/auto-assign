@@ -14,7 +14,7 @@ Cross-repo plan covering auto-assist, auto-router, and auto-assign.
 | P0 | auto-assist | **Worker health monitoring** — Added HTTP health server on port 8100; Docker healthcheck updated |
 | P0 | auto-assist | **`_workflow_control_state` thread safety** — Wrapped in `threading.Lock` with `_get_workflow_control()` / `_set_workflow_control()` helpers |
 | P0 | auto-assign | **`CacheStore` connection pooling** — Single persistent SQLite connection with WAL mode, `check_same_thread=False` |
-| P0 | auto-assign | **Async SQLite** — `_inbound_event_was_processed()` / `_mark_inbound_event_processed()` migrated to `aiosqlite` |
+| P0 | auto-assign | **`CacheStore` connection pooling** — Single persistent SQLite connection with WAL mode, `check_same_thread=False` (NOTE: documented concurrency hazard; async `aiosqlite` migration NOT done — see W-34 in LLD_UNIFIED_FLEET) |
 | P0 | auto-router | **Config validation at startup** — Warns on missing config files and empty provider registry |
 | P0 | auto-router | **Agentgateway env vars in compose** — All 10 `AUTO_ROUTER_AGENTGATEWAY_*` vars added to `docker-compose.yml` |
 | P1 | auto-assist | **Neo4j connection pooling** — `GraphDatabase.driver()` now accepts `NEO4J_MAX_CONNECTION_POOL_SIZE`, `NEO4J_CONNECTION_ACQUISITION_TIMEOUT`, `NEO4J_MAX_TRANSACTION_RETRY_TIME` env vars |

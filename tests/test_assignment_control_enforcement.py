@@ -57,7 +57,7 @@ def test_paused_control_blocks_new_assignment_evaluation(tmp_path):
 
     response = client.post(
         "/api/assignments/evaluate",
-        json={"task_id": "ASS-paused", "dry_run": True, "candidate_lanes": ["paperclip"]},
+        json={"task_id": "ASS-paused", "dry_run": True, "candidate_lanes": ["router_model"]},
     )
 
     assert response.status_code == 200
@@ -74,7 +74,7 @@ def test_maintenance_control_blocks_new_assignment_evaluation(tmp_path):
 
     response = client.post(
         "/api/assignments/evaluate",
-        json={"task_id": "ASS-maintenance", "dry_run": True, "candidate_lanes": ["paperclip"]},
+        json={"task_id": "ASS-maintenance", "dry_run": True, "candidate_lanes": ["router_model"]},
     )
 
     assert response.status_code == 200

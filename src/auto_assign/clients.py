@@ -32,6 +32,7 @@ class AssistXClient:
     def __init__(self, settings: Settings):
         self.base_url = settings.assistx_base_url.rstrip("/")
         self.timeout = settings.assistx_timeout_seconds
+        self._auth = (settings.assistx_auth_user, settings.assistx_auth_pass) if settings.assistx_auth_user and settings.assistx_auth_pass else None
         self._client = httpx.AsyncClient(timeout=self.timeout)
 
     async def close(self):
@@ -42,7 +43,7 @@ class AssistXClient:
 
     async def health(self) -> dict[str, Any]:
         try:
-            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers())
+            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers(), auth=self._auth)
             return {
                 "reachable": response.is_success,
                 "status_code": response.status_code,
@@ -58,6 +59,7 @@ class AssistXClient:
                 url,
                 params={"limit": limit, "queue": "backlog", "dry_run": "true"},
                 headers=self._default_headers(),
+                auth=self._auth,
             )
             response.raise_for_status()
             payload = response.json()
@@ -69,7 +71,7 @@ class AssistXClient:
     async def get_task(self, task_id: str) -> AssignmentCandidate | None:
         for path in (f"/api/tasks/{task_id}", f"/api/router/tasks/{task_id}"):
             try:
-                response = await self._client.get(f"{self.base_url}{path}", headers=self._default_headers())
+                response = await self._client.get(f"{self.base_url}{path}", headers=self._default_headers(), auth=self._auth)
                 if response.is_success:
                     return self._candidate_from_item(response.json())
             except Exception as exc:
@@ -81,7 +83,7 @@ class AssistXClient:
     async def event_status(self, idempotency_key: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/events/status"
         try:
-            response = await self._client.get(url, params={"idempotency_key": idempotency_key}, headers=self._default_headers())
+            response = await self._client.get(url, params={"idempotency_key": idempotency_key}, headers=self._default_headers(), auth=self._auth)
             if response.is_success:
                 return response.json()
         except Exception:
@@ -96,7 +98,7 @@ class AssistXClient:
         headers.update(self._default_headers())
         for attempt in range(max_retries + 1):
             try:
-                response = await self._client.request(method, url, headers=headers, **kwargs)
+                response = await self._client.request(method, url, headers=headers, auth=self._auth, **kwargs)
                 if response.is_success or response.status_code in (409, 404):
                     return response
                 if response.status_code < 500:

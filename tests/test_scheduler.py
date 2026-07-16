@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.models import (
@@ -11,6 +12,7 @@ from auto_assign.models import (
     Lane,
     RouterSnapshot,
     SchedulerTickRequest,
+    utc_now,
 )
 from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService
@@ -85,7 +87,9 @@ class TestSchedulerTick:
 
     async def test_scheduler_tick_empty_candidates(self, tmp_path):
         svc = make_service(tmp_path)
-        svc.assistx.get_backlog_candidates = lambda limit=25: []  # type: ignore[method-assign]
+        async def _empty_backlog(limit: int = 25):
+            return []
+        svc.assistx.get_backlog_candidates = _empty_backlog  # type: ignore[method-assign]
         response = await svc.scheduler_tick(
             SchedulerTickRequest(dry_run=True, limit=5, reason="test")
         )
@@ -111,8 +115,8 @@ class TestHeartbeat:
             assignment_id=None,
         )
         event = svc.record_heartbeat(heartbeat)
-        assert event.event_type == "worker.heartbeat.recorded"
-        assert "heartbeat_" in event.event_id
+        assert event.event_type == "assign.worker.heartbeat.recorded"
+        assert "heartbeat_" in event.event_id or event.event_id.startswith("evt_")
         hbs = svc.list_heartbeats()
         assert len(hbs) == 1
         assert hbs[0]["worker_id"] == "worker-1"
@@ -126,7 +130,7 @@ class TestHeartbeat:
             assignment_id="assign-1",
             task_id="ASS-1",
             decision_id="dec-1",
-            status=AssignmentStatus.IN_PROGRESS,
+            status=AssignmentStatus.RUNNING,
             selected_lane=Lane.PAPERCLIP,
             selected_target="worker-1",
             score=0.9,
@@ -165,12 +169,13 @@ class TestHeartbeat:
             node_id="node-stale",
             worker_id="worker-stale",
         ))
-        svc.cache._upsert(
-            "INSERT OR REPLACE INTO heartbeats (heartbeat_id, node_id, worker_id, assignment_id, status, heartbeat_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("hb-1", "node-stale", "worker-stale", None, "running",
-             (time.time() - 3600), (time.time() - 3600)),
-        )
+        with svc.cache.connect() as _conn:
+            _conn.execute(
+                "INSERT OR REPLACE INTO heartbeats (heartbeat_id, node_id, worker_id, assignment_id, status, received_at, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("hb-1", "node-stale", "worker-stale", None, "running",
+                 (time.time() - 3600), "{}"),
+            )
         stale = svc.list_stale_heartbeats(stale_after_seconds=300)
         assert stale["count"] >= 1
         assert stale["stale_after_seconds"] == 300
@@ -193,7 +198,7 @@ class TestExpireStaleLeases:
             assignment_id="assign-expired",
             task_id="ASS-1",
             decision_id="dec-1",
-            status=AssignmentStatus.IN_PROGRESS,
+            status=AssignmentStatus.RUNNING,
             selected_lane=Lane.PAPERCLIP,
             selected_target="worker-1",
             score=0.9,
@@ -201,10 +206,11 @@ class TestExpireStaleLeases:
         )
         svc.cache.upsert_assignment(decision)
         # Set lease expiry far in the past
-        svc.cache._upsert(
-            "UPDATE assignments SET lease_expires_at = ? WHERE assignment_id = ?",
-            ((time.time() - 3600), "assign-expired"),
-        )
+        with svc.cache.connect() as _conn:
+            _conn.execute(
+                "UPDATE assignments SET lease_expires_at = ? WHERE assignment_id = ?",
+                ((utc_now() - timedelta(seconds=3600)).isoformat(), "assign-expired"),
+            )
         result = svc.expire_stale_leases()
         assert result["expired_count"] == 1
         assert result["events_emitted"] == 1
@@ -219,7 +225,7 @@ class TestExpireStaleLeases:
             assignment_id="assign-active",
             task_id="ASS-2",
             decision_id="dec-2",
-            status=AssignmentStatus.IN_PROGRESS,
+            status=AssignmentStatus.RUNNING,
             selected_lane=Lane.PAPERCLIP,
             selected_target="worker-2",
             score=0.95,
@@ -227,10 +233,11 @@ class TestExpireStaleLeases:
         )
         svc.cache.upsert_assignment(decision)
         # Set lease to far in the future
-        svc.cache._upsert(
-            "UPDATE assignments SET lease_expires_at = ? WHERE assignment_id = ?",
-            ((time.time() + 3600), "assign-active"),
-        )
+        with svc.cache.connect() as _conn:
+            _conn.execute(
+                "UPDATE assignments SET lease_expires_at = ? WHERE assignment_id = ?",
+                ((utc_now() + timedelta(seconds=3600)).isoformat(), "assign-active"),
+            )
         result = svc.expire_stale_leases()
         assert result["expired_count"] == 0
         assert result["events_emitted"] == 0

@@ -1,14 +1,9 @@
 # Runtime — FastAPI service
-aiosqlite
-fastapi
-uvicorn[standard]
-pydantic
-httpx
-
-# Runtime — Flask semantic search app
-flask
-torch
-transformers
+fastapi>=0.115.0
+starlette>=0.37.2,<0.39.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
+httpx>=0.27.0
 
 # Neo4j driver (used by both runtimes)
 neo4j
@@ -17,3 +12,7 @@ neo4j
 pytest
 pytest-asyncio
 ruff
+
+# NOTE: the orphan Flask speaker-clustering UI (archived/app.py + archived/templates)
+# used flask/torch/transformers. Those heavy ML deps are intentionally NOT part of
+# the base image. They remain available via the optional `flask` extra for reference.

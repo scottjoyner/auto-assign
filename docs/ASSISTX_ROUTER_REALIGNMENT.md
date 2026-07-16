@@ -216,7 +216,7 @@ The next implementation cycle should not start with direct dispatch. It should s
 
 The assignment scorer should prefer lanes in this order unless hard gates override:
 
-1. `paperclip` for current approved execution work.
+1. `router_model` for current execution tasks.
 2. `local_only` for sensitive/private/local tasks.
 3. `router_model` for safe planning/review/drafting.
 4. `free_api` only for non-sensitive backlog burn-down with safe quota posture.

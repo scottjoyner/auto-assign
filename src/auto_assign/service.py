@@ -72,20 +72,19 @@ class AssignmentService:
         self.cache.enqueue_event(self._decision_event(decision, dry_run=dry_run))
         return decision
 
-    async def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
-        async with await self.cache.aconnect() as db:
-            cursor = await db.execute(
+    def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
+        with self.cache.connect() as conn:
+            row = conn.execute(
                 "SELECT status FROM inbound_event_processing WHERE idempotency_key = ?",
                 (idempotency_key,),
-            )
-            row = await cursor.fetchone()
+            ).fetchone()
         return row is not None
 
-    async def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
+    def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
         now = utc_now().isoformat()
         status = action.get("action", "processed")
-        async with await self.cache.aconnect() as db:
-            await db.execute(
+        with self.cache.connect() as conn:
+            conn.execute(
                 """
                 INSERT INTO inbound_event_processing (
                     idempotency_key, event_id, event_type, status, action_json,
@@ -221,7 +220,7 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_APPROVED,
             idempotency_key=f"{EventType.ASSIGNMENT_APPROVED}:{assignment_id}:{request.approved_by}:{request.approval_reason}",
-            subject=assignment.get("task_id", assignment_id),
+            subject={"kind": "task", "id": assignment.get("task_id", assignment_id)},
             payload={
                 "assignment_id": assignment_id,
                 "task_id": assignment.get("task_id"),
@@ -269,7 +268,7 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_RELEASED,
             idempotency_key=f"{EventType.ASSIGNMENT_RELEASED}:{assignment_id}:{request.reason}:{request.retryable}",
-            subject=assignment.get("task_id", assignment_id),
+            subject={"kind": "batch", "id": assignment.get("task_id", assignment_id)},
             payload={
                 **self._assignment_event_context(assignment_id, assignment),
                 "reason": request.reason,
@@ -294,7 +293,7 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.WORKER_HEARTBEAT_RECORDED,
             idempotency_key=f"{EventType.WORKER_HEARTBEAT_RECORDED}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
-            subject=heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
+            subject={"kind": "node", "id": f"{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id or 'none'}"},
             payload={"heartbeat_id": heartbeat_id, **heartbeat.model_dump(mode="json")},
         )
         self.cache.enqueue_event(event)
@@ -326,7 +325,7 @@ class AssignmentService:
         router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
-            if not include_processed and await self._inbound_event_was_processed(event["idempotency_key"]):
+            if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
                 skipped_already_processed += 1
                 continue
             event_name = event.get("event_type")
@@ -377,7 +376,7 @@ class AssignmentService:
                     "action": "ignored",
                     "reason": "no_processor_registered",
                 }
-            await self._mark_inbound_event_processed(event, action)
+            self._mark_inbound_event_processed(event, action)
             actions.append(action)
         return {
             "processed": len(actions),
@@ -496,9 +495,9 @@ class AssignmentService:
         return EventEnvelope(
             event_type=event_type,
             idempotency_key=decision.idempotency_key,
-            subject=decision.task_id,
+            subject={"kind": "task", "id": decision.task_id},
             payload={**decision.model_dump(mode="json"), "dry_run": dry_run, "cache_role": "outbox_replay_buffer"},
-            privacy=[],
+            privacy={"pii": False, "privacy_class": "public", "retention_class": "keep"},
         )
 
     # ------------------------------------------------------------------
@@ -525,7 +524,7 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_CLAIMED,
             idempotency_key=f"{EventType.ASSIGNMENT_CLAIMED}:{assignment_id}:{request.worker_id}:{request.correlation_id}",
-            subject=request.task_id,
+            subject={"kind": "assignment", "id": assignment_id},
             correlation_id=request.correlation_id,
             payload={
                 **self._assignment_event_context(
@@ -567,7 +566,7 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=event_type,
             idempotency_key=f"{event_type}:{assignment_id}:{request.worker_id}:{request.status}:{utc_now().isoformat()}",
-            subject=request.task_id,
+            subject={"kind": "assignment", "id": assignment_id},
             correlation_id=request.correlation_id,
             payload={
                 **self._assignment_event_context(
@@ -615,10 +614,15 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_HEARTBEAT,
             idempotency_key=f"{EventType.ASSIGNMENT_HEARTBEAT}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
-            subject=heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
+            subject={
+                "kind": "assignment" if heartbeat.assignment_id else "node",
+                "id": heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
+            },
+            correlation_id=heartbeat.correlation_id,
             payload={
                 "heartbeat_id": heartbeat_id,
                 "lease_renewed": lease_renewed,
+                "correlation_id": heartbeat.correlation_id,
                 **heartbeat.model_dump(mode="json"),
                 **(
                     self._assignment_event_context(
@@ -645,7 +649,7 @@ class AssignmentService:
                 event = EventEnvelope(
                     event_type=EventType.ASSIGNMENT_EXPIRED,
                     idempotency_key=f"{EventType.ASSIGNMENT_EXPIRED}:{assignment_id}:{utc_now().isoformat()}",
-                    subject=assignment.get("task_id", assignment_id),
+                    subject={"kind": "task", "id": assignment.get("task_id", assignment_id)},
                     payload={
                         **self._assignment_event_context(assignment_id, assignment),
                         "reason": "lease_expired",
