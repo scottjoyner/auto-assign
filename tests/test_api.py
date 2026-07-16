@@ -488,3 +488,39 @@ def test_ops_summary_reports_cache_state(tmp_path):
     assert summary["heartbeats"]["count"] == 1
     assert summary["stale_heartbeat_seconds"] > 0
     assert isinstance(summary["inbound_processing"], list)
+
+
+def test_api_auth_enforced_when_token_set(tmp_path):
+    from auto_assign.settings import Settings as _Settings
+
+    settings = _Settings(
+        database_url=f"sqlite:///{tmp_path / 'auth.sqlite3'}",
+        api_token="secret-token",
+    )
+    svc = AssignmentService(
+        settings=settings,
+        cache=CacheStore(settings.sqlite_path),
+        assistx=FakeAssistXClient(settings),
+        router=FakeRouterClient(settings),
+        scorer=AssignmentScorer(settings),
+    )
+    app.state.assignment_service = svc
+    client = TestClient(app)
+
+    # health stays open
+    assert client.get("/health").status_code == 200
+
+    # protected route without token -> 401
+    assert client.get("/api/assignments").status_code == 401
+
+    # Bearer token accepted
+    assert client.get("/api/assignments", headers={"Authorization": "Bearer secret-token"}).status_code == 200
+
+    # Basic auth (password == token) accepted
+    import base64 as _b64
+
+    basic = _b64.b64encode(b"anyuser:secret-token").decode()
+    assert client.get("/api/assignments", headers={"Authorization": f"Basic {basic}"}).status_code == 200
+
+    # wrong token -> 401
+    assert client.get("/api/assignments", headers={"Authorization": "Bearer wrong"}).status_code == 401

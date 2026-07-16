@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.requests import Request
 
 from . import __version__
 from .logging_utils import install_logging_middleware, setup_logging
@@ -72,6 +73,51 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import base64
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Paths that are always open (health probe + metrics scrape).
+_PUBLIC_PATHS = {"/health", "/metrics"}
+
+
+@app.middleware("http")
+async def api_auth_middleware(request: Request, call_next):
+    """Enforce a shared-secret on every route except /health and /metrics.
+
+    Auth is satisfied by either ``Authorization: Bearer <token>`` or HTTP Basic
+    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``. When no
+    token is configured the check is skipped (local-dev only) with a warning.
+    """
+    settings = None
+    svc = getattr(request.app.state, "assignment_service", None)
+    if svc is not None:
+        settings = svc.settings
+    if settings is None:
+        settings = get_settings()
+    if request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+    if not settings.api_token:
+        logger.warning("API auth disabled: AUTO_ASSIGN_API_TOKEN is not set")
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    expected = settings.api_token
+    authorized = False
+    if auth_header.startswith("Bearer "):
+        authorized = auth_header[len("Bearer "):].strip() == expected
+    elif auth_header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth_header[len("Basic "):].strip()).decode("utf-8")
+            _user, _, pwd = decoded.partition(":")
+            authorized = pwd == expected
+        except Exception:
+            authorized = False
+    if not authorized:
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+    return await call_next(request)
 
 
 def get_assignment_service() -> AssignmentService:

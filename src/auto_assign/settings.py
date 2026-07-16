@@ -45,6 +45,11 @@ class Settings:
     direct_workers_enabled: bool = _bool_env("AUTO_ASSIGN_DIRECT_WORKERS_ENABLED", False)
     log_payload_bodies: bool = _bool_env("AUTO_ASSIGN_LOG_PAYLOAD_BODIES", False)
 
+    # API auth: shared secret (Bearer token or HTTP Basic password with any user).
+    # When empty, auth is disabled and a warning is logged at startup (safe default
+    # for local dev only — set AUTO_ASSIGN_API_TOKEN in any real deployment).
+    api_token: str = os.getenv("AUTO_ASSIGN_API_TOKEN", "")
+
     # Scorer lane base scores (comma-separated "lane=score" pairs)
     lane_base_scores: str = os.getenv("AUTO_ASSIGN_LANE_BASE_SCORES",
                                        "local_only=0.78,router_model=0.66,free_api=0.55,direct_worker=0.20")

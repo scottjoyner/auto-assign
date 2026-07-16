@@ -155,7 +155,7 @@ def test_decision_idempotency_key_is_status_neutral_for_blocked_decision():
 
 
 def test_direct_worker_lane_scored_when_enabled():
-    scorer = AssignmentScorer(Settings())
+    scorer = AssignmentScorer(Settings(direct_workers_enabled=True))
     candidate = AssignmentCandidate(
         task_id="ASS-direct-worker",
         allowed_lanes=[Lane.DIRECT_WORKER],
