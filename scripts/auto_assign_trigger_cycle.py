@@ -85,7 +85,7 @@ def main() -> int:
             print(json.dumps({"status": "error", "stage": "cycle", "error": str(exc), "base_url": BASE_URL}, sort_keys=True))
             return 1
 
-        released_expired = int(expired.get("released_expired", 0) or expired.get("expired", 0) or 0)
+        released_expired = int(expired.get("released_expired", 0) or expired.get("expired_count", 0) or expired.get("expired", 0) or 0)
         processed_count = int(processed.get("processed", 0) or 0)
         tick_evaluated = int(tick.get("evaluated", 0) or 0)
         tick_recommended = int(tick.get("recommended", 0) or 0)

@@ -37,6 +37,10 @@ class Settings:
     tick_interval_seconds: int = _int_env("AUTO_ASSIGN_TICK_INTERVAL_SECONDS", 300)
     default_lease_seconds: int = _int_env("AUTO_ASSIGN_DEFAULT_LEASE_SECONDS", 900)
     stale_heartbeat_seconds: int = _int_env("AUTO_ASSIGN_STALE_HEARTBEAT_SECONDS", 120)
+    # Grace period AFTER a lease's expiry before it is considered stale/expired.
+    # Separate from `default_lease_seconds` (the lease length itself). Heartbeats
+    # use `stale_heartbeat_seconds`; leases use `default_lease_seconds` + this grace.
+    stale_assignment_seconds: int = _int_env("AUTO_ASSIGN_STALE_ASSIGNMENT_SECONDS", 0)
     dispatch_enabled: bool = _bool_env("AUTO_ASSIGN_DISPATCH_ENABLED", False)
     direct_workers_enabled: bool = _bool_env("AUTO_ASSIGN_DIRECT_WORKERS_ENABLED", False)
     log_payload_bodies: bool = _bool_env("AUTO_ASSIGN_LOG_PAYLOAD_BODIES", False)

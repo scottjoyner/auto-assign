@@ -189,6 +189,7 @@ class AssignmentService:
 
         scheduler_run_id = f"tick_{uuid4().hex[:12]}"
         self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
+        expired = self.expire_stale_leases()
         response = SchedulerTickResponse(
             scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
@@ -196,7 +197,7 @@ class AssignmentService:
             recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
             approval_required=sum(1 for d in decisions if d.status == AssignmentStatus.APPROVAL_REQUIRED),
             skipped=sum(1 for d in decisions if d.status == AssignmentStatus.BLOCKED),
-            released_expired=0,
+            released_expired=expired.get("expired_count", 0),
             decisions=decisions,
         )
         self.cache.record_scheduler_run(
@@ -640,8 +641,11 @@ class AssignmentService:
         return event
 
     def expire_stale_leases(self) -> dict:
-        stale_threshold = self.settings.default_lease_seconds
-        expired = self.cache.expire_stale_assignments(stale_seconds=stale_threshold)
+        # A lease is stale once its expiry has passed by at least the configured
+        # grace (`stale_assignment_seconds`), kept separate from the lease length
+        # (`default_lease_seconds`). Heartbeats use `stale_heartbeat_seconds`.
+        grace = self.settings.stale_assignment_seconds
+        expired = self.cache.expire_stale_assignments(stale_seconds=grace)
         expired_events = 0
         for assignment_id in expired:
             assignment = self.cache.get_assignment(assignment_id)
@@ -657,4 +661,4 @@ class AssignmentService:
                 )
                 self.cache.enqueue_event(event)
                 expired_events += 1
-        return {"expired_count": len(expired), "events_emitted": expired_events}
+        return {"expired_count": len(expired), "events_emitted": expired_events, "released_expired": len(expired)}
