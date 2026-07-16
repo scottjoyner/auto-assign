@@ -20,7 +20,6 @@ class AssignmentStatus(StrEnum):
     APPROVAL_REQUIRED = "approval_required"
     RESERVED = "reserved"
     DISPATCHED = "dispatched"
-    IN_PROGRESS = "in_progress"
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"

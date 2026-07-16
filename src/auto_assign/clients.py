@@ -78,7 +78,6 @@ class AssistXClient:
                 logger.debug("get_task %s failed on %s: %s", task_id, path, exc)
                 continue
         return None
-        return None
 
     async def event_status(self, idempotency_key: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/events/status"

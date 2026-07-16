@@ -19,7 +19,6 @@ class EventType(StrEnum):
     ASSIGNMENT_COMPLETED = "assignment.completed"
     ASSIGNMENT_FAILED = "assignment.failed"
     ASSIGNMENT_EXPIRED = "assignment.expired"
-    ASSIGNMENT_RELEASED_CANONICAL = "assignment.released"
 
     TASK_CANDIDATE_CREATED = "task.candidate.created"
     ROUTER_QUOTA_SNAPSHOT_RECORDED = "router.quota_snapshot.recorded"
