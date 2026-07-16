@@ -20,6 +20,13 @@ class CacheStore:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # CONCURRENCY HAZARD (W-34): a single shared connection is used across the
+        # async event loop with check_same_thread=False. sqlite3 is not
+        # thread-safe by default; this works only because all access goes through
+        # short-lived `with self.connect()` context blocks and the WAL busy_timeout
+        # absorbs contention. TODO: migrate to aiosqlite with a per-call connection
+        # (or a connection pool) so the blocking calls stop running on the event
+        # loop. aiosqlite was removed from deps (W-33) pending that migration.
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")

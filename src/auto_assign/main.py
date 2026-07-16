@@ -45,9 +45,14 @@ def build_service(settings: Settings | None = None) -> AssignmentService:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # W-40: schema-init / migration failure must degrade gracefully rather than
+    # crash import/startup. Build defensively so /health still answers.
     if not hasattr(app.state, "assignment_service"):
-        svc = build_service()
-        app.state.assignment_service = svc
+        try:
+            app.state.assignment_service = build_service()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Failed to build assignment service; starting degraded: %s", exc)
+            app.state.assignment_service = None
     yield
     svc = getattr(app.state, "assignment_service", None)
     if svc:
