@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -53,7 +54,31 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Failed to build assignment service; starting degraded: %s", exc)
             app.state.assignment_service = None
+    svc = getattr(app.state, "assignment_service", None)
+    tick_task = None
+    if svc is not None and get_settings().scheduler_enabled:
+        async def _scheduler_loop() -> None:
+            # Autonomous tick loop: periodically invokes the same scheduler_tick
+            # path an operator would call manually, in non-dry-run mode, so the
+            # fleet self-assigns backlog work without external cron. After scoring,
+            # the decision events are flushed to AssistX (dispatch_outbox) so
+            # assignments actually materialise in the canonical graph.
+            await asyncio.sleep(2)
+            while True:
+                try:
+                    await svc.scheduler_tick(
+                        SchedulerTickRequest(dry_run=False, reason="autonomous_scheduler_loop")
+                    )
+                    if get_settings().dispatch_enabled:
+                        await svc.dispatch_outbox(dry_run=False)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("autonomous scheduler tick failed: %s", exc)
+                await asyncio.sleep(get_settings().tick_interval_seconds)
+
+        tick_task = asyncio.create_task(_scheduler_loop())
     yield
+    if tick_task is not None:
+        tick_task.cancel()
     svc = getattr(app.state, "assignment_service", None)
     if svc:
         await svc.assistx.close()

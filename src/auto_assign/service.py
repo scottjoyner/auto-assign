@@ -22,6 +22,7 @@ from .models import (
     RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,
+    correlation_for_task,
     utc_now,
 )
 from .scorer import AssignmentScorer
@@ -221,7 +222,9 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_APPROVED,
             idempotency_key=f"{EventType.ASSIGNMENT_APPROVED}:{assignment_id}:{request.approved_by}:{request.approval_reason}",
+            correlation_id=correlation_for_task(assignment.get("task_id", assignment_id)),
             subject={"kind": "task", "id": assignment.get("task_id", assignment_id)},
+            links=[{"rel": "FOR_TASK", "target_type": "Task", "target_id": assignment.get("task_id", assignment_id)}],
             payload={
                 "assignment_id": assignment_id,
                 "task_id": assignment.get("task_id"),
@@ -269,7 +272,9 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_RELEASED,
             idempotency_key=f"{EventType.ASSIGNMENT_RELEASED}:{assignment_id}:{request.reason}:{request.retryable}",
+            correlation_id=correlation_for_task(assignment.get("task_id", assignment_id)),
             subject={"kind": "batch", "id": assignment.get("task_id", assignment_id)},
+            links=[{"rel": "FOR_TASK", "target_type": "Task", "target_id": assignment.get("task_id", assignment_id)}],
             payload={
                 **self._assignment_event_context(assignment_id, assignment),
                 "reason": request.reason,
@@ -294,7 +299,9 @@ class AssignmentService:
         event = EventEnvelope(
             event_type=EventType.WORKER_HEARTBEAT_RECORDED,
             idempotency_key=f"{EventType.WORKER_HEARTBEAT_RECORDED}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
+            correlation_id=correlation_for_task(heartbeat.assignment_id or heartbeat.node_id),
             subject={"kind": "node", "id": f"{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id or 'none'}"},
+            links=[{"rel": "FOR_NODE", "target_type": "Node", "target_id": heartbeat.node_id}],
             payload={"heartbeat_id": heartbeat_id, **heartbeat.model_dump(mode="json")},
         )
         self.cache.enqueue_event(event)
@@ -496,7 +503,9 @@ class AssignmentService:
         return EventEnvelope(
             event_type=event_type,
             idempotency_key=decision.idempotency_key,
+            correlation_id=correlation_for_task(decision.task_id),
             subject={"kind": "task", "id": decision.task_id},
+            links=[{"rel": "FOR_TASK", "target_type": "Task", "target_id": decision.task_id}],
             payload={**decision.model_dump(mode="json"), "dry_run": dry_run, "cache_role": "outbox_replay_buffer"},
             privacy={"pii": False, "privacy_class": "public", "retention_class": "keep"},
         )

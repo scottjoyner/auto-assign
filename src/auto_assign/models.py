@@ -3,9 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_URL
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def correlation_for_task(task_id: str) -> str:
+    """Deterministic correlation_id so all events for a task trace together.
+
+    AssistX's canonical EventEnvelope requires a valid UUID correlation_id; a
+    stable derivation keeps the trace group idempotent across retries.
+    """
+    return str(uuid5(NAMESPACE_URL, f"auto-assign/task/{task_id}"))
 
 
 def utc_now() -> datetime:
@@ -44,6 +53,9 @@ class Lane(StrEnum):
 
 
 class EventEnvelope(BaseModel):
+    # Aligned to the unified-fleet canonical EventEnvelope (assistx.contracts).
+    # correlation_id is REQUIRED (valid UUID) and links MUST be a list so the
+    # event validates at AssistX's /api/events boundary (W-05/W-06 trace linkage).
     event_id: str = Field(default_factory=lambda: f"evt_{uuid4().hex}")
     event_type: str
     source_repo: str = "auto-assign"
@@ -51,15 +63,15 @@ class EventEnvelope(BaseModel):
     node_id: str = "auto-assign"
     occurred_at: datetime = Field(default_factory=utc_now)
     idempotency_key: str
-    schema_version: str = "1.0"
+    schema_version: str = "2026-06-08.v1"
     subject: str | dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
     artifact_refs: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     privacy: dict[str, Any] = Field(default_factory=lambda: {"pii": False, "privacy_class": "public", "retention_class": "keep"})
-    correlation_id: str | None = None
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
     actor: dict[str, Any] | None = None
-    links: dict[str, Any] | None = None
+    links: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AssignmentCandidate(BaseModel):
