@@ -71,6 +71,9 @@ async def lifespan(app: FastAPI):
                     )
                     if get_settings().dispatch_enabled:
                         await svc.dispatch_outbox(dry_run=False)
+                        # Close the loop: create the actual executable :Task a
+                        # fleet worker can claim, from recommended decisions.
+                        await svc.dispatch_tasks(dry_run=False)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("autonomous scheduler tick failed: %s", exc)
                 await asyncio.sleep(get_settings().tick_interval_seconds)
@@ -576,10 +579,23 @@ async def list_outbox_events(
 @app.post("/api/outbox/dispatch")
 async def dispatch_outbox(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    request: Request,
     dry_run: bool = Query(default=True),
     limit: int = Query(default=25, ge=1, le=500),
 ):
+    # Honour dry_run from either the query param or the JSON body, so API
+    # callers sending {"dry_run": false} in the body are not silently forced
+    # into dry-run (the previous Query-only default dropped body values).
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "dry_run" in body:
+            dry_run = bool(body["dry_run"])
+    except Exception:
+        pass
     return await service.dispatch_outbox(dry_run=dry_run, limit=limit)
+
+
+
 
 
 @app.post("/api/outbox/reconcile")

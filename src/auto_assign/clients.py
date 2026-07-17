@@ -124,6 +124,42 @@ class AssistXClient:
             logger.warning("post_event failed after retries: %s", exc)
             return {"delivered": False, "error": str(exc)}
 
+    async def create_task(
+        self,
+        task_id: str,
+        title: str,
+        required_capabilities: list[str],
+        payload: dict[str, Any] | None = None,
+        priority: str = "background",
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize an executable :Task in AssistX from a recommended decision.
+
+        auto-assign's scheduler only scores + emits decision *events*; this
+        closes the loop by creating the actual Task node a fleet worker can
+        claim + execute. Idempotent on task_id.
+        """
+        url = f"{self.base_url}/api/tasks"
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "title": title,
+            "task_type": "swarm_task",
+            "status": "READY",
+            "required_capabilities": required_capabilities,
+            "priority": priority,
+            "payload": payload or {},
+        }
+        if correlation_id:
+            body["correlation_id"] = correlation_id
+        try:
+            response = await self._request_with_retry("POST", url, json=body)
+            if response.status_code in (200, 201, 409):
+                return {"created": response.status_code != 409, "status_code": response.status_code}
+            return {"created": False, "status_code": response.status_code}
+        except Exception as exc:
+            logger.warning("create_task failed for %s: %s", task_id, exc)
+            return {"created": False, "error": str(exc)}
+
     def _extract_items(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]

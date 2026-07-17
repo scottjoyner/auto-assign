@@ -433,6 +433,59 @@ class AssignmentService:
             "canonical_source": "neo4j_via_assistx",
         }
 
+    async def dispatch_tasks(self, dry_run: bool = True, limit: int = 25) -> dict[str, Any]:
+        """Materialize executable :Task nodes for recommended decisions.
+
+        The scheduler only emits decision *events*; this closes the loop by
+        creating the actual Task a fleet worker can claim + execute, so backlog
+        work actually runs instead of stalling as a notification.
+        """
+        decisions = self.cache.list_assignments(limit=limit)
+        created = 0
+        failed = 0
+        skipped = 0
+        for decision in decisions:
+            if decision.get("status") != AssignmentStatus.RECOMMENDED.value:
+                skipped += 1
+                continue
+            task_id = decision.get("task_id")
+            if not task_id:
+                skipped += 1
+                continue
+            lane = (decision.get("selected_lane") or "local_only").lower()
+            caps = ["llm"] if lane in ("router_model", "free_api") else ["script"]
+            payload = {
+                "source": "auto-assign",
+                "command": f"echo 'auto-assign task {task_id}: {decision.get('title', task_id)}'",
+                "title": decision.get("title", task_id),
+            }
+            if dry_run:
+                skipped += 1
+                continue
+            try:
+                result = await self.assistx.create_task(
+                    task_id=task_id,
+                    title=decision.get("title", task_id),
+                    required_capabilities=caps,
+                    payload=payload,
+                    priority="background",
+                    correlation_id=correlation_for_task(task_id),
+                )
+                if result.get("created"):
+                    created += 1
+                else:
+                    skipped += 1
+            except Exception as exc:
+                logger.warning("dispatch_tasks failed for %s: %s", task_id, exc)
+                failed += 1
+        return {
+            "dry_run": dry_run,
+            "considered": len(decisions),
+            "created": created,
+            "failed": failed,
+            "skipped": skipped,
+        }
+
     async def reconcile_outbox(self, limit: int = 100) -> dict:
         events = self.cache.pending_events(limit=limit)
         delivered_keys: list[str] = []
