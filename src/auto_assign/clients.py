@@ -160,6 +160,29 @@ class AssistXClient:
             logger.warning("create_task failed for %s: %s", task_id, exc)
             return {"created": False, "error": str(exc)}
 
+    async def enqueue_task(
+        self, task_id: str, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Push a READY task into the RQ execution queue so a fleet worker can
+        claim + run it. Without this step the task sits in Neo4j forever (the
+        rq worker is a passive consumer and only runs jobs already enqueued).
+
+        This is the missing link in the dispatch chain: ``create_task``
+        materializes the :Task node but nothing enqueues it, so the swarm
+        never executes. Call this immediately after a successful create_task.
+        """
+        if dry_run:
+            return {"enqueued": False, "dry_run": True}
+        url = f"{self.base_url}/api/tasks/{task_id}/enqueue"
+        try:
+            response = await self._request_with_retry("POST", url)
+            if response.status_code in (200, 201, 409):
+                return {"enqueued": response.status_code != 409, "status_code": response.status_code}
+            return {"enqueued": False, "status_code": response.status_code}
+        except Exception as exc:
+            logger.warning("enqueue_task failed for %s: %s", task_id, exc)
+            return {"enqueued": False, "error": str(exc)}
+
     def _extract_items(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]

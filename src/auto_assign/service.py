@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
@@ -473,6 +476,16 @@ class AssignmentService:
                 )
                 if result.get("created"):
                     created += 1
+                    # Enqueue immediately so the rq worker can claim + execute.
+                    # This was the missing link: tasks were created READY in
+                    # Neo4j but never pushed to the RQ queue, so the fleet
+                    # never ran them.
+                    try:
+                        enq = await self.assistx.enqueue_task(task_id, dry_run=False)
+                        if not enq.get("enqueued"):
+                            logger.warning("enqueue_task skipped for %s: %s", task_id, enq)
+                    except Exception as enq_exc:
+                        logger.warning("enqueue_task failed for %s: %s", task_id, enq_exc)
                 else:
                     skipped += 1
             except Exception as exc:
