@@ -55,6 +55,26 @@ PROMPTS = [
     "Write a one-line insight about observability for inference fleets.",
 ]
 
+# Harder prompts used for complexity:high|medium tasks — these benefit from the
+# large resident "quality" models the operator has loaded.
+DEEP_PROMPTS = [
+    "Design a distributed inference control plane: describe the scheduler, the health model, the model-to-node placement policy, and how you would handle a node silently dropping mid-generation. Include failure recovery semantics.",
+    "Critique this architecture for a self-hosted LLM fleet: a single router holds all benchmark state, workers pull tasks over HTTP, and a separate executor thread dispatches to LM Studio. What are the bottleneck and single points of failure, and how would you harden it?",
+    "Walk through a rigorous analysis of why mixture-of-experts models can serve faster than dense models of equivalent total parameter count, addressing expert routing, memory bandwidth, and batching behavior under variable load.",
+    "Given a heterogeneous GPU fleet (one 24GB desktop, two 16GB mini-PCs, one 8GB laptop), propose a capacity-aware placement and concurrency policy for models ranging 3B-35B. Justify each assignment quantitatively.",
+    "Explain the end-to-end causality of KV-cache growth under continuous batching and derive how it bounds the maximum concurrent sequences for a given VRAM budget. Where does this break down in practice?",
+]
+
+
+def _complexity_for(seq: int) -> str:
+    """Weighted mix: ~20% high, ~20% medium, ~60% low/untagged (speed tier)."""
+    mod = seq % 5
+    if mod == 0:
+        return "high"
+    if mod == 1:
+        return "medium"
+    return ""
+
 
 @dataclass
 class Stats:
@@ -88,10 +108,12 @@ def _req(method: str, path: str, payload: dict | None = None, retries: int = 3) 
     return 0, {"error": str(last_err) if last_err else "request failed"}
 
 
-def submit(task_id: str, prompt: str, model: str = "") -> str | None:
+def submit(task_id: str, prompt: str, model: str = "", complexity: str = "") -> str | None:
     payload = {"prompt": prompt}
     if model:
         payload["model"] = model
+    if complexity:
+        payload["complexity"] = complexity
     body = {
         "title": f"fleet-gen-{task_id}",
         "task_type": "swarm_task",
@@ -128,8 +150,13 @@ def run_once(count: int, batch: int, interval: float, model: str = "") -> Stats:
         for _ in range(to_send):
             tid = f"fleet-gen-{int(time.time()*1000)}-{seq}"
             seq += 1
-            prompt = PROMPTS[stats.submitted % len(PROMPTS)]
-            real = submit(tid, prompt, model)
+            complexity = _complexity_for(stats.submitted)
+            prompt = (
+                DEEP_PROMPTS[stats.submitted % len(DEEP_PROMPTS)]
+                if complexity == "high"
+                else (DEEP_PROMPTS[(stats.submitted // 2) % len(DEEP_PROMPTS)] if complexity == "medium" else PROMPTS[stats.submitted % len(PROMPTS)])
+            )
+            real = submit(tid, prompt, model, complexity)
             if real:
                 stats.submitted += 1
                 stats.pending.add(real)
@@ -178,8 +205,13 @@ def run_loop(rate: float, model: str = "") -> None:
         while True:
             tid = f"fleet-gen-{int(time.time()*1000)}-{seq}"
             seq += 1
-            prompt = PROMPTS[seq % len(PROMPTS)]
-            real = submit(tid, prompt, model)
+            complexity = _complexity_for(seq)
+            prompt = (
+                DEEP_PROMPTS[seq % len(DEEP_PROMPTS)]
+                if complexity == "high"
+                else (DEEP_PROMPTS[(seq // 2) % len(DEEP_PROMPTS)] if complexity == "medium" else PROMPTS[seq % len(PROMPTS)])
+            )
+            real = submit(tid, prompt, model, complexity)
             if real:
                 stats.submitted += 1
                 stats.pending.add(real)
