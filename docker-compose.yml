@@ -19,7 +19,34 @@ services:
       - default
       - assistx
 
+  # Continuous fleet workload generator: keeps the GPU fleet exercised by
+  # submitting real caps=['llm'] tasks. Auto-starts with the stack so the
+  # fleet never sits idle once models are resident. Reuses the same assistx
+  # brain/auth as auto-assign (read from .env).
+  fleet-workload-generator:
+    build: .
+    container_name: fleet-workload-generator
+    restart: unless-stopped
+    command: ["python", "-u", "/gen/fleet_workload_generator.py", "--loop", "--rate", "3"]
+    env_file:
+      - .env
+    volumes:
+      - ./scripts:/gen:ro
+    environment:
+      - FLEET_GEN_ASSISTX_URL=http://assistx-api:8000
+      - FLEET_GEN_AUTH_USER=${AUTO_ASSIGN_ASSISTX_AUTH_USER:-admin}
+      - FLEET_GEN_AUTH_PASS=${AUTO_ASSIGN_ASSISTX_AUTH_PASS:-gluhlaf8}
+      - FLEET_GEN_TIMEOUT=30
+    depends_on:
+      - auto-assign
+    networks:
+      - default
+      - git_default
+
 networks:
   assistx:
     external: true
     name: auto-assist_default
+  git_default:
+    external: true
+    name: git_default

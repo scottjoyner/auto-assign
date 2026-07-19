@@ -27,8 +27,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-BASE_URL = os.getenv("FLEET_GEN_ASSISTX_URL", "http://localhost:8000").rstrip("/")
-AUTH_USER = os.getenv("FLEET_GEN_AUTH_USER", "admin")
+BASE_URL = os.getenv("FLEET_GEN_ASSISTX_URL", os.getenv("AUTO_ASSIGN_ASSISTX_BASE_URL", "http://localhost:8000")).rstrip("/")
+AUTH_USER = os.getenv("FLEET_GEN_AUTH_USER", os.getenv("AUTO_ASSIGN_ASSISTX_AUTH_USER", "admin"))
 AUTH_PASS = os.getenv("FLEET_GEN_AUTH_PASS", os.getenv("AUTO_ASSIGN_ASSISTX_AUTH_PASS", "gluhlaf8"))
 HTTP_TIMEOUT = float(os.getenv("FLEET_GEN_TIMEOUT", "30"))
 
