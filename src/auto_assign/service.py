@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from uuid import uuid4
@@ -498,6 +499,63 @@ class AssignmentService:
             "failed": failed,
             "skipped": skipped,
         }
+
+    async def drain_ready_backlog(self, limit: int = 200, dry_run: bool = False) -> dict[str, Any]:
+        """Directly enqueue READY tasks into the RQ execution queue.
+
+        The scheduler scores a limited candidate set and only dispatches
+        RECOMMENDED decisions. With a 41k+ READY backlog that path cannot keep
+        the fleet fed, so this closes the loop by pushing READY tasks straight
+        to the executor queue (idempotent: assistx 409s if already queued).
+        Bounded per call; the autonomous loop calls it every tick so throughput
+        scales with tick frequency rather than a single page.
+        """
+        if not self.settings.dispatch_enabled:
+            return {"dry_run": dry_run, "enqueued": 0, "failed": 0, "skipped": 0, "dispatch_disabled": True}
+        ready = await self.assistx.get_ready_tasks(limit=limit)
+        if not ready:
+            return {"dry_run": dry_run, "enqueued": 0, "failed": 0, "skipped": 0, "considered": 0}
+        if dry_run:
+            return {"dry_run": True, "considered": len(ready), "enqueued": 0, "failed": 0, "skipped": len(ready)}
+
+        sem = asyncio.Semaphore(int(self.settings.dispatch_concurrency))
+        enqueued = 0
+        failed = 0
+        skipped = 0
+
+        async def _one(task_id: str) -> None:
+            nonlocal enqueued, failed, skipped
+            async with sem:
+                try:
+                    res = await self.assistx.enqueue_task(task_id, dry_run=False)
+                    if res.get("enqueued"):
+                        enqueued += 1
+                    elif res.get("status_code") == 409:
+                        skipped += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    failed += 1
+
+        # LLM-tagged tasks are owned by the fleet executor (it polls
+        # capabilities=llm and runs them on resident GPU nodes). Enqueuing them
+        # to the local RQ worker makes it try to run them without a model and
+        # mark them FAILED, starving the fleet. Skip them here.
+        def _is_llm(item: dict) -> bool:
+            caps = item.get("required_capabilities") or []
+            if isinstance(caps, str):
+                try:
+                    caps = json.loads(caps)
+                except Exception:
+                    caps = []
+            return isinstance(caps, list) and "llm" in caps
+
+        llm_skipped = sum(1 for t in ready if _is_llm(t))
+        dispatchable = [t for t in ready if not _is_llm(t)]
+        skipped += llm_skipped
+
+        await asyncio.gather(*(_one(t.get("id") or t.get("task_id")) for t in dispatchable))
+        return {"dry_run": False, "considered": len(ready), "enqueued": enqueued, "failed": failed, "skipped": skipped}
 
     async def reconcile_outbox(self, limit: int = 100) -> dict:
         events = self.cache.pending_events(limit=limit)

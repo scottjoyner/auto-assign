@@ -74,6 +74,11 @@ async def lifespan(app: FastAPI):
                         # Close the loop: create the actual executable :Task a
                         # fleet worker can claim, from recommended decisions.
                         await svc.dispatch_tasks(dry_run=False)
+                        # Drain the large READY backlog straight into the RQ
+                        # execution queue so the fleet stays fed concurrently.
+                        await svc.drain_ready_backlog(
+                            limit=get_settings().drain_batch_size, dry_run=False
+                        )
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("autonomous scheduler tick failed: %s", exc)
                 await asyncio.sleep(get_settings().tick_interval_seconds)

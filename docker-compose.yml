@@ -18,6 +18,7 @@ services:
     networks:
       - default
       - assistx
+      - git_default
 
   # Continuous fleet workload generator: keeps the GPU fleet exercised by
   # submitting real caps=['llm'] tasks. Auto-starts with the stack so the
@@ -46,7 +47,7 @@ services:
 networks:
   assistx:
     external: true
-    name: auto-assist_default
+    name: home_scott_git_auto-assist_default
   git_default:
     external: true
     name: git_default

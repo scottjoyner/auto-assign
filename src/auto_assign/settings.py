@@ -44,6 +44,8 @@ class Settings:
     dispatch_enabled: bool = _bool_env("AUTO_ASSIGN_DISPATCH_ENABLED", False)
     direct_workers_enabled: bool = _bool_env("AUTO_ASSIGN_DIRECT_WORKERS_ENABLED", False)
     log_payload_bodies: bool = _bool_env("AUTO_ASSIGN_LOG_PAYLOAD_BODIES", False)
+    dispatch_concurrency: int = _int_env("AUTO_ASSIGN_DISPATCH_CONCURRENCY", 50)
+    drain_batch_size: int = _int_env("AUTO_ASSIGN_DRAIN_BATCH_SIZE", 200)
 
     # API auth: shared secret (Bearer token or HTTP Basic password with any user).
     # When empty, auth is disabled and a warning is logged at startup (safe default

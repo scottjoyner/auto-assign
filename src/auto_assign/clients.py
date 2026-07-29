@@ -68,6 +68,23 @@ class AssistXClient:
         except Exception:
             return []
 
+    async def get_ready_tasks(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Pull a page of READY tasks directly from the canonical graph so the
+        backlog can be drained into the RQ queue without the recommend-gate."""
+        url = f"{self.base_url}/api/tasks"
+        try:
+            response = await self._client.get(
+                url,
+                params={"status": "READY", "limit": limit},
+                headers=self._default_headers(),
+                auth=self._auth,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return self._extract_items(payload)
+        except Exception:
+            return []
+
     async def get_task(self, task_id: str) -> AssignmentCandidate | None:
         for path in (f"/api/tasks/{task_id}", f"/api/router/tasks/{task_id}"):
             try:
