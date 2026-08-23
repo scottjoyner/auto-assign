@@ -752,7 +752,9 @@ class AssignmentService:
                 "kind": "assignment" if heartbeat.assignment_id else "node",
                 "id": heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
             },
-            correlation_id=heartbeat.correlation_id,
+            # Heartbeats may omit correlation_id (None); the envelope requires a
+            # UUID string, so synthesize one instead of failing validation.
+            correlation_id=heartbeat.correlation_id or str(uuid4()),
             payload={
                 "heartbeat_id": heartbeat_id,
                 "lease_renewed": lease_renewed,
