@@ -294,13 +294,20 @@ class RouterClient:
     def __init__(self, settings: Settings):
         self.base_url = settings.router_base_url.rstrip("/")
         self.timeout = settings.router_timeout_seconds
+        self._admin_token = (settings.router_admin_token or "").strip()
         self._client = httpx.AsyncClient(timeout=self.timeout)
 
     async def close(self):
         await self._client.aclose()
 
     def _default_headers(self) -> dict[str, str]:
-        return inject_trace_headers()
+        hdrs = inject_trace_headers()
+        # Router admin endpoints require AUTO_ROUTER_ADMIN_TOKEN; without it the
+        # snapshot silently degrades to unreachable (401 on every admin probe).
+        token = self._admin_token
+        if token:
+            hdrs["X-Admin-Token"] = token
+        return hdrs
 
     async def health(self) -> dict[str, Any]:
         try:

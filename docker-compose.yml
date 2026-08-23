@@ -28,7 +28,7 @@ services:
     build: .
     container_name: fleet-workload-generator
     restart: unless-stopped
-    command: ["python", "-u", "/gen/fleet_workload_generator.py", "--loop", "--rate", "3"]
+    command: ["python", "-u", "/gen/fleet_workload_generator.py", "--loop", "--rate", "${FLEET_GEN_RATE:-0.025}"]
     env_file:
       - .env
     volumes:
@@ -36,7 +36,7 @@ services:
     environment:
       - FLEET_GEN_ASSISTX_URL=http://assistx-api:8000
       - FLEET_GEN_AUTH_USER=${AUTO_ASSIGN_ASSISTX_AUTH_USER:-admin}
-      - FLEET_GEN_AUTH_PASS=${AUTO_ASSIGN_ASSISTX_AUTH_PASS:-gluhlaf8}
+      - FLEET_GEN_AUTH_PASS=${AUTO_ASSIGN_ASSISTX_AUTH_PASS:?set in .env}
       - FLEET_GEN_TIMEOUT=30
     depends_on:
       - auto-assign

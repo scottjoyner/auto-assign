@@ -19,6 +19,10 @@ OUTBOX_LIMIT = int(os.getenv("AUTO_ASSIGN_TRIGGER_OUTBOX_LIMIT", "50"))
 
 def request_json(method: str, path: str, payload: dict | None = None) -> dict:
     headers = {}
+    # /api/* requires the shared token (Basic with token as password also works).
+    token = os.getenv("AUTO_ASSIGN_API_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")

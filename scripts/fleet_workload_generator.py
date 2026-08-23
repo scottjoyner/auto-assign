@@ -14,7 +14,7 @@ Usage:
 Env:
     FLEET_GEN_ASSISTX_URL   (default http://localhost:8000)
     FLEET_GEN_AUTH_USER      (default admin)
-    FLEET_GEN_AUTH_PASS      (default from AUTO_ASSIGN_ASSISTX_AUTH_PASS or gluhlaf8)
+    FLEET_GEN_AUTH_PASS      (default from AUTO_ASSIGN_ASSISTX_AUTH_PASS or the AUTO_ASSIGN_ASSISTX_AUTH_PASS env)
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 BASE_URL = os.getenv("FLEET_GEN_ASSISTX_URL", os.getenv("AUTO_ASSIGN_ASSISTX_BASE_URL", "http://localhost:8000")).rstrip("/")
 AUTH_USER = os.getenv("FLEET_GEN_AUTH_USER", os.getenv("AUTO_ASSIGN_ASSISTX_AUTH_USER", "admin"))
-AUTH_PASS = os.getenv("FLEET_GEN_AUTH_PASS", os.getenv("AUTO_ASSIGN_ASSISTX_AUTH_PASS", "gluhlaf8"))
+AUTH_PASS = os.getenv("FLEET_GEN_AUTH_PASS", os.getenv("AUTO_ASSIGN_ASSISTX_AUTH_PASS", ""))
 HTTP_TIMEOUT = float(os.getenv("FLEET_GEN_TIMEOUT", "30"))
 
 PROMPTS = [
