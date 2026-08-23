@@ -215,8 +215,14 @@ def run_loop(rate: float, model: str = "") -> None:
             if real:
                 stats.submitted += 1
                 stats.pending.add(real)
-            # Reap finished.
+            # Reap finished. Bounded: polling every pending task each cycle is
+            # O(n) per submit and starves once inflight grows large, pinning
+            # done=0 forever while hammering the API with GETs.
+            reaped = 0
             for done_tid in list(stats.pending):
+                if reaped >= 50:
+                    break
+                reaped += 1
                 t = poll(done_tid)
                 if t:
                     stats.pending.discard(done_tid)
