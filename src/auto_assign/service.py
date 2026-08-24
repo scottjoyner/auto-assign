@@ -457,10 +457,16 @@ class AssignmentService:
                 skipped += 1
                 continue
             lane = (decision.get("selected_lane") or "local_only").lower()
+            if not (decision.get("payload") or {}).get("runbook"):
+                # Script-lane decisions have no executable work product since
+                # generic shell execution was removed - materializing them as
+                # echo placeholders flooded AssistX with ~295k duplicate tasks.
+                skipped += 1
+                continue
             caps = ["llm"] if lane in ("router_model", "free_api") else ["script"]
             payload = {
                 "source": "auto-assign",
-                "command": f"echo 'auto-assign task {task_id}: {decision.get('title', task_id)}'",
+                "runbook": decision["payload"]["runbook"],
                 "title": decision.get("title", task_id),
             }
             if dry_run:
@@ -474,6 +480,7 @@ class AssignmentService:
                     payload=payload,
                     priority="background",
                     correlation_id=correlation_for_task(task_id),
+                    idempotency_key=f"auto-assign-dispatch:{task_id}",
                 )
                 if result.get("created"):
                     created += 1

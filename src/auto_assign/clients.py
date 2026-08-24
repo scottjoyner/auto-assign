@@ -149,6 +149,7 @@ class AssistXClient:
         payload: dict[str, Any] | None = None,
         priority: str = "background",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Materialize an executable :Task in AssistX from a recommended decision.
 
@@ -168,6 +169,10 @@ class AssistXClient:
         }
         if correlation_id:
             body["correlation_id"] = correlation_id
+        if idempotency_key:
+            # AssistX dedupes on this key (409 -> created=False). Without it a
+            # repeated decision re-materializes an identical Task every tick.
+            body["idempotency_key"] = idempotency_key
         try:
             response = await self._request_with_retry("POST", url, json=body)
             if response.status_code in (200, 201, 409):
