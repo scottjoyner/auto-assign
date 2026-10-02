@@ -5,6 +5,13 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      AUTO_ASSIGN_ASSISTX_BASE_URL: http://assistx-api:8000
+      AUTO_ASSIGN_ROUTER_BASE_URL: http://llm-router:8088
+      AUTO_ASSIGN_SCHEDULER_ENABLED: "false"
+      AUTO_ASSIGN_DISPATCH_ENABLED: "false"
+      AUTO_ASSIGN_DIRECT_WORKERS_ENABLED: "false"
+      AUTO_ASSIGN_LOG_PAYLOAD_BODIES: "false"
     ports:
       - "8090:8090"
     volumes:
