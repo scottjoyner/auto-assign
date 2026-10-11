@@ -10,7 +10,6 @@ import pytest
 from auto_assign.clients import RouterClient
 from auto_assign.settings import Settings
 
-
 VALID_CONTEXT = {
     "revision": "synthetic-router-revision",
     "source": "synthetic",
