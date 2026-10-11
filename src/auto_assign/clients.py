@@ -323,6 +323,11 @@ class RouterClient:
 
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
+        # A public legacy /admin/context 200 is NOT proof of administrative
+        # authorization. Missing credentials must not trigger anonymous probes
+        # or allow the scorer to promote a partially authenticated snapshot.
+        if not self._admin_token:
+            return snapshot
         try:
             hdrs = self._default_headers()
             context_resp, quota_resp, circuits_resp, clis_resp, ops_resp = await asyncio.gather(
@@ -332,15 +337,24 @@ class RouterClient:
                 self._client.get(f"{self.base_url}/admin/agent-clis", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/ops/summary", headers=hdrs),
             )
+            # Four required routes must return genuine 2xx responses. Some
+            # older routers do not implement /admin/agent-clis (404 allowed);
+            # any 401/403, redirect, rate limit or 5xx still fails closed.
+            if not all(resp.is_success for resp in (
+                context_resp, quota_resp, circuits_resp, ops_resp,
+            )):
+                return snapshot
+            if not (clis_resp.is_success or clis_resp.status_code == 404):
+                return snapshot
 
             self._apply_snapshot_payloads(
                 snapshot=snapshot,
-                context_payload=context_resp.json() if context_resp.is_success else {},
-                quota_payload=quota_resp.json() if quota_resp.is_success else {},
-                circuits_payload=circuits_resp.json() if circuits_resp.is_success else {},
+                context_payload=context_resp.json(),
+                quota_payload=quota_resp.json(),
+                circuits_payload=circuits_resp.json(),
                 clis_payload=clis_resp.json() if clis_resp.is_success else {},
-                ops_payload=ops_resp.json() if ops_resp.is_success else {},
-                reachable=context_resp.is_success,
+                ops_payload=ops_resp.json(),
+                reachable=True,
             )
         except Exception:
             snapshot.reachable = False
@@ -357,8 +371,20 @@ class RouterClient:
         reachable: bool = True,
     ) -> RouterSnapshot:
         context = self._unwrap_context(context_payload)
-        snapshot.reachable = bool(reachable and context)
-        snapshot.context_revision = self._context_revision(context)
+        revision = self._context_revision(context)
+        has_context_structure = any(
+            isinstance(context.get(key), (list, Mapping))
+            for key in ("providers", "models", "model_providers",
+                        "nodes", "workers", "worker_nodes", "hosts",
+                        "services", "endpoints", "routes")
+        )
+        snapshot.reachable = bool(
+            reachable and isinstance(revision, str) and revision.strip()
+            and has_context_structure
+        )
+        if not snapshot.reachable:
+            return snapshot
+        snapshot.context_revision = revision
         snapshot.nodes = self._payload_list(context, ("nodes", "workers", "worker_nodes", "hosts"))
         snapshot.providers = self._payload_list(context, ("providers", "models", "model_providers"))
         snapshot.services = self._payload_list(context, ("services", "endpoints", "routes"))
