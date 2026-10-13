@@ -1,4 +1,5 @@
 """Source-only CI gate contract; no live network or credential activity."""
+
 from pathlib import Path
 
 
