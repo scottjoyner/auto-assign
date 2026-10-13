@@ -90,19 +90,21 @@ def _assert_owner_declared_activation(
     scheduler: object, expected: dict[str, object]
 ) -> None:
     """Observe state; never mutate assignment policy to satisfy a test."""
-    assert isinstance(scheduler, dict), "scheduler health metadata missing"
+    if not isinstance(scheduler, dict):
+        raise AssertionError("scheduler health metadata missing")
     for field, approved in expected.items():
         actual: object = scheduler
         for part in field.split("."):
-            assert isinstance(actual, dict) and part in actual, (
-                f"required activation field {field} missing"
-            )
+            if not isinstance(actual, dict) or part not in actual:
+                raise AssertionError(f"required activation field {field} missing")
             actual = actual[part]
         if isinstance(approved, bool):
-            assert type(actual) is bool, f"activation field {field} is not boolean"
-        else:
-            assert isinstance(actual, str), f"activation field {field} is not string"
-        assert actual == approved, f"activation {field} differs from owner declaration"
+            if type(actual) is not bool:
+                raise AssertionError(f"activation field {field} is not boolean")
+        elif not isinstance(actual, str):
+            raise AssertionError(f"activation field {field} is not string")
+        if actual != approved:
+            raise AssertionError(f"activation {field} differs from owner declaration")
 
 
 def test_live_activation_matches_owner_declared_profile(
@@ -111,6 +113,7 @@ def test_live_activation_matches_owner_declared_profile(
     # Evaluate expectations BEFORE making an HTTP request.
     expected = _read_owner_declared_activation()
     response = assign_client.get("/health")
-    assert response.is_success, f"Auto-Assign health HTTP {response.status_code}"
+    if not response.is_success:
+        raise AssertionError(f"Auto-Assign health HTTP {response.status_code}")
     scheduler = response.json().get("scheduler")
     _assert_owner_declared_activation(scheduler, expected)
