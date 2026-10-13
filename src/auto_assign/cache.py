@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -393,8 +393,8 @@ class CacheStore:
         if lease_expires_at is not None:
             updates.append("lease_expires_at=?")
             if isinstance(lease_expires_at, (int, float)):
-                from datetime import datetime, timezone
-                lease_value = datetime.fromtimestamp(lease_expires_at, tz=timezone.utc).isoformat()
+                from datetime import datetime
+                lease_value = datetime.fromtimestamp(lease_expires_at, tz=UTC).isoformat()
             else:
                 lease_value = lease_expires_at
             params.append(lease_value)
