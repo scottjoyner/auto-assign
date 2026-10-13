@@ -15,10 +15,10 @@ from .logging_utils import install_logging_middleware, setup_logging
 from .metrics import CONTENT_TYPE_LATEST, OUTBOX_PENDING, STALE_HEARTBEATS, generate_latest
 
 _start_time = time.time()
-from .cache import CacheStore
-from .clients import AssistXClient, RouterClient
-from .control import AssignmentControlStore
-from .models import (
+from .cache import CacheStore  # noqa: E402
+from .clients import AssistXClient, RouterClient  # noqa: E402
+from .control import AssignmentControlStore  # noqa: E402
+from .models import (  # noqa: E402
     AssignmentApprovalRequest,
     AssignmentClaimRequest,
     AssignmentCompletionRequest,
@@ -30,9 +30,9 @@ from .models import (
     HeartbeatRequest,
     SchedulerTickRequest,
 )
-from .scorer import AssignmentScorer
-from .service import AssignmentService
-from .settings import Settings, get_settings
+from .scorer import AssignmentScorer  # noqa: E402
+from .service import AssignmentService  # noqa: E402
+from .settings import Settings, get_settings  # noqa: E402
 
 
 def build_service(settings: Settings | None = None) -> AssignmentService:
@@ -103,7 +103,8 @@ app = FastAPI(
 setup_logging()
 install_logging_middleware(app)
 
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080,http://localhost:8090").split(","),
@@ -112,8 +113,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import base64
-import logging
+import base64  # noqa: E402
+import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

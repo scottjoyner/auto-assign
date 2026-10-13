@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-from .cache import CacheStore
-from .clients import AssistXClient, RouterClient
-from .control import AssignmentControlStore
-from .events import EventType, ROUTER_SNAPSHOT_EVENTS
-from .models import (
+from .cache import CacheStore  # noqa: E402
+from .clients import AssistXClient, RouterClient  # noqa: E402
+from .control import AssignmentControlStore  # noqa: E402
+from .events import ROUTER_SNAPSHOT_EVENTS, EventType  # noqa: E402
+from .models import (  # noqa: E402
     AssignmentApprovalRequest,
     AssignmentCandidate,
     AssignmentClaimRequest,
@@ -22,15 +23,14 @@ from .models import (
     AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
-    Lane,
     RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,
     correlation_for_task,
     utc_now,
 )
-from .scorer import AssignmentScorer
-from .settings import Settings
+from .scorer import AssignmentScorer  # noqa: E402
+from .settings import Settings  # noqa: E402
 
 
 class AssignmentService:
