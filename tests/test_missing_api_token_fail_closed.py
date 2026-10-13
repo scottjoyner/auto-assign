@@ -14,7 +14,6 @@ from starlette.responses import Response
 
 from auto_assign.main import api_auth_middleware
 
-
 FAKE_TOKEN = "synthetic-unit-only-not-a-live-credential"
 
 
