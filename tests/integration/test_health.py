@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 
@@ -49,6 +51,66 @@ def test_stale_heartbeat_watchdog_surface_is_available(assign_client: httpx.Clie
     assert isinstance(payload.get("heartbeats"), list)
     assert payload.get("count", 0) >= 0
 
-    health = assign_client.get("/health").json()
-    assert health["scheduler"]["control"]["mode"] == "enabled"
-    assert health["scheduler"]["dispatch_enabled"] is True
+    # This endpoint test validates read-only response shape, NOT authorization
+    # to enable the scheduler, dispatch, or new assignments.
+
+
+# Live acceptance must compare all activation controls against separately
+# approved expectations, not a hardcoded "enabled" deployment assumption.
+_ACTIVATION_BOOLEAN_FIELDS = {
+    "AUTO_ASSIGN_EXPECT_SCHEDULER_ENABLED": ("enabled",),
+    "AUTO_ASSIGN_EXPECT_DISPATCH_ENABLED": ("dispatch_enabled",),
+    "AUTO_ASSIGN_EXPECT_DIRECT_WORKERS_ENABLED": ("direct_workers_enabled",),
+    "AUTO_ASSIGN_EXPECT_NEW_ASSIGNMENTS_ALLOWED": ("control", "new_assignments_allowed"),
+    "AUTO_ASSIGN_EXPECT_SCHEDULER_TICKS_ALLOWED": ("control", "scheduler_ticks_allowed"),
+}
+
+
+def _read_owner_declared_activation() -> dict[str, object]:
+    """Fail closed without explicit external operator expectations."""
+    expected: dict[str, object] = {}
+    for env_name, path in _ACTIVATION_BOOLEAN_FIELDS.items():
+        raw = os.environ.get(env_name)
+        if raw not in ("true", "false"):
+            raise AssertionError(
+                f"{env_name} must be explicitly set to 'true' or 'false' "
+                "by the authorized live-integration operator"
+            )
+        expected[".".join(path)] = raw == "true"
+    mode = os.environ.get("AUTO_ASSIGN_EXPECT_CONTROL_MODE", "").strip()
+    if not mode:
+        raise AssertionError(
+            "AUTO_ASSIGN_EXPECT_CONTROL_MODE requires an explicitly reviewed value"
+        )
+    expected["control.mode"] = mode
+    return expected
+
+
+def _assert_owner_declared_activation(
+    scheduler: object, expected: dict[str, object]
+) -> None:
+    """Observe state; never mutate assignment policy to satisfy a test."""
+    assert isinstance(scheduler, dict), "scheduler health metadata missing"
+    for field, approved in expected.items():
+        actual: object = scheduler
+        for part in field.split("."):
+            assert isinstance(actual, dict) and part in actual, (
+                f"required activation field {field} missing"
+            )
+            actual = actual[part]
+        if isinstance(approved, bool):
+            assert type(actual) is bool, f"activation field {field} is not boolean"
+        else:
+            assert isinstance(actual, str), f"activation field {field} is not string"
+        assert actual == approved, f"activation {field} differs from owner declaration"
+
+
+def test_live_activation_matches_owner_declared_profile(
+    assign_client: httpx.Client,
+) -> None:
+    # Evaluate expectations BEFORE making an HTTP request.
+    expected = _read_owner_declared_activation()
+    response = assign_client.get("/health")
+    assert response.is_success, f"Auto-Assign health HTTP {response.status_code}"
+    scheduler = response.json().get("scheduler")
+    _assert_owner_declared_activation(scheduler, expected)
