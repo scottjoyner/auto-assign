@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "integration" / "conftest.py"
 _SPEC = importlib.util.spec_from_file_location("controlled_live_fixtures", FIXTURES)
