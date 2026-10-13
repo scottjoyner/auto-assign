@@ -127,8 +127,9 @@ async def api_auth_middleware(request: Request, call_next):
     """Enforce a shared-secret on every route except /health and /metrics.
 
     Auth is satisfied by either ``Authorization: Bearer <token>`` or HTTP Basic
-    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``. When no
-    token is configured the check is skipped (local-dev only) with a warning.
+    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``.
+    If the token is missing, protected routes MUST fail closed; local development
+    may use an explicit synthetic token but must never rely on implicit bypass.
     """
     settings = None
     svc = getattr(request.app.state, "assignment_service", None)
@@ -139,8 +140,10 @@ async def api_auth_middleware(request: Request, call_next):
     if request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
     if not settings.api_token:
-        logger.warning("API auth disabled: AUTO_ASSIGN_API_TOKEN is not set")
-        return await call_next(request)
+        logger.error("Protected API unavailable: AUTO_ASSIGN_API_TOKEN is not configured")
+        return JSONResponse(
+            status_code=503, content={"detail": "authentication unavailable"}
+        )
 
     auth_header = request.headers.get("Authorization", "")
     expected = settings.api_token
