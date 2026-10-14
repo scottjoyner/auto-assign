@@ -811,88 +811,117 @@ class AssignmentService:
     # ------------------------------------------------------------------
 
     async def claim_assignment(self, assignment_id: str, request: AssignmentClaimRequest) -> dict:
-        assignment = self.cache.get_assignment(assignment_id)
-        if assignment is None:
-            return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
-        if assignment.get("status") not in ("recommended", "reserved"):
-            return {"accepted": False, "reason": f"assignment status '{assignment.get('status')}' is not claimable"}
+        # The request defaults to preview, unlike the prior implicit write.
+        if request.dry_run:
+            return {
+                "accepted": False, "preview": True, "dry_run": True,
+                "would_attempt": "claim_assignment",
+                "reason": "claim_preview_only_no_lease_or_event",
+            }
 
-        now = utc_now()
-        lease_expires = now.timestamp() + request.lease_seconds
-        self.cache.update_assignment_status(
-            assignment_id,
-            status="running",
-            worker_id=request.worker_id,
-            node_id=request.node_id,
-            lease_expires_at=lease_expires,
-        )
-
-        event = EventEnvelope(
-            event_type=EventType.ASSIGNMENT_CLAIMED,
-            idempotency_key=f"{EventType.ASSIGNMENT_CLAIMED}:{assignment_id}:{request.worker_id}:{request.correlation_id}",
-            subject={"kind": "assignment", "id": assignment_id},
-            correlation_id=request.correlation_id,
-            payload={
-                **self._assignment_event_context(
-                    assignment_id,
-                    assignment,
-                    task_id=request.task_id,
-                    worker_id=request.worker_id,
-                    node_id=request.node_id,
-                    status="running",
-                    lease_seconds=request.lease_seconds,
-                    lease_expires_at=lease_expires,
-                    route_id=request.route_id,
+        def build_claim_event(prior: dict, lease_epoch: float | None) -> EventEnvelope:
+            return EventEnvelope(
+                event_type=EventType.ASSIGNMENT_CLAIMED,
+                idempotency_key=(
+                    f"{EventType.ASSIGNMENT_CLAIMED}:{assignment_id}:"
+                    f"{request.worker_id}:{request.correlation_id}"
                 ),
-                "route_id": request.route_id,
-                "capabilities": request.capabilities,
-                "correlation_id": request.correlation_id,
-                **request.metadata,
-            },
+                subject={"kind": "assignment", "id": assignment_id},
+                correlation_id=request.correlation_id,
+                payload={
+                    **request.metadata,
+                    **self._assignment_event_context(
+                        assignment_id, prior,
+                        task_id=prior["task_id"],
+                        worker_id=request.worker_id,
+                        node_id=request.node_id,
+                        status="running",
+                        lease_seconds=request.lease_seconds,
+                        lease_expires_at=lease_epoch,
+                        route_id=request.route_id,
+                    ),
+                    "route_id": request.route_id,
+                    "capabilities": request.capabilities,
+                    "correlation_id": request.correlation_id,
+                },
+            )
+
+        event, reason = self.cache.transition_assignment_with_event(
+            assignment_id,
+            expected_task_id=request.task_id,
+            allowed_statuses=("recommended", "reserved"),
+            new_status="running",
+            claiming_worker=request.worker_id,
+            node_id=request.node_id,
+            lease_seconds=request.lease_seconds,
+            event_factory=build_claim_event,
         )
-        self.cache.enqueue_event(event)
+        if event is None:
+            return {"accepted": False, "reason": reason}
         return {
             "accepted": True,
+            "preview": False,
             "event_id": event.event_id,
             "assignment_id": assignment_id,
             "worker_id": request.worker_id,
-            "lease_expires_at": lease_expires,
             "correlation_id": request.correlation_id,
         }
 
     async def complete_assignment(self, assignment_id: str, request: AssignmentCompletionRequest) -> dict:
-        assignment = self.cache.get_assignment(assignment_id)
-        if assignment is None:
-            return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        if request.assignment_id != assignment_id:
+            return {"accepted": False, "reason": "assignment_path_body_mismatch"}
+        if request.dry_run:
+            return {
+                "accepted": False, "preview": True, "dry_run": True,
+                "would_attempt": "complete_assignment",
+                "reason": "completion_preview_only_no_status_or_event",
+            }
 
         status = "done" if request.status == "success" else "failed"
-        self.cache.update_assignment_status(assignment_id, status=status)
-
-        event_type = EventType.ASSIGNMENT_COMPLETED if status == "done" else EventType.ASSIGNMENT_FAILED
-        event = EventEnvelope(
-            event_type=event_type,
-            idempotency_key=f"{event_type}:{assignment_id}:{request.worker_id}:{request.status}:{utc_now().isoformat()}",
-            subject={"kind": "assignment", "id": assignment_id},
-            correlation_id=request.correlation_id,
-            payload={
-                **self._assignment_event_context(
-                    assignment_id,
-                    assignment,
-                    task_id=request.task_id,
-                    worker_id=request.worker_id,
-                    status=status,
-                    route_id=assignment.get("route_id"),
-                ),
-                "status": request.status,
-                "summary": request.summary,
-                "artifacts": request.artifacts,
-                "correlation_id": request.correlation_id,
-                **request.metadata,
-            },
+        event_type = (
+            EventType.ASSIGNMENT_COMPLETED
+            if status == "done" else EventType.ASSIGNMENT_FAILED
         )
-        self.cache.enqueue_event(event)
+
+        def build_completion_event(prior: dict, _lease_epoch: float | None) -> EventEnvelope:
+            return EventEnvelope(
+                event_type=event_type,
+                idempotency_key=(
+                    f"{event_type}:{assignment_id}:"
+                    f"{request.worker_id}:{request.correlation_id}"
+                ),
+                subject={"kind": "assignment", "id": assignment_id},
+                correlation_id=request.correlation_id,
+                payload={
+                    **request.metadata,
+                    **self._assignment_event_context(
+                        assignment_id, prior,
+                        task_id=prior["task_id"],
+                        worker_id=request.worker_id,
+                        status=status,
+                        route_id=prior.get("route_id"),
+                    ),
+                    "status": request.status,
+                    "summary": request.summary,
+                    "artifacts": request.artifacts,
+                    "correlation_id": request.correlation_id,
+                },
+            )
+
+        event, reason = self.cache.transition_assignment_with_event(
+            assignment_id,
+            expected_task_id=request.task_id,
+            allowed_statuses=("running",),
+            new_status=status,
+            require_worker=request.worker_id,
+            require_live_lease=True,
+            event_factory=build_completion_event,
+        )
+        if event is None:
+            return {"accepted": False, "reason": reason}
         return {
             "accepted": True,
+            "preview": False,
             "event_id": event.event_id,
             "assignment_id": assignment_id,
             "status": status,
