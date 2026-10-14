@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -406,6 +406,58 @@ class CacheStore:
                 "SELECT status, COUNT(*) AS count FROM outbox_events GROUP BY status"
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
+
+    def claim_assignment_if_unowned(
+        self, assignment_id: str, task_id: str, worker_id: str,
+        node_id: str | None, lease_expires_at: float,
+    ) -> bool:
+        """Atomic cache-level compare-and-set. NOT canonical graph admission."""
+        now = utc_now().isoformat()
+        lease_iso = datetime.fromtimestamp(lease_expires_at, tz=UTC).isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET status='running', updated_at=?, lease_expires_at=?,
+                    payload_json=json_set(
+                        payload_json, '$.status', 'running',
+                        '$.worker_id', ?, '$.node_id', ?,
+                        '$.lease_expires_at', ?
+                    )
+                WHERE assignment_id=? AND task_id=?
+                  AND status IN ('recommended', 'reserved')
+                  AND COALESCE(json_extract(payload_json, '$.worker_id'), '')=''
+                """,
+                (now, lease_iso, worker_id, node_id, lease_iso,
+                 assignment_id, task_id),
+            )
+            return updated.rowcount == 1
+
+    def complete_assignment_if_owned(
+        self, assignment_id: str, task_id: str, worker_id: str,
+        status: str,
+    ) -> bool:
+        """Atomic owner/lease/state CAS, not distributed fencing authority."""
+        if status not in ("done", "failed"):
+            return False
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET status=?, updated_at=?, lease_expires_at=NULL,
+                    payload_json=json_set(
+                        payload_json, '$.status', ?,
+                        '$.lease_expires_at', NULL
+                    )
+                WHERE assignment_id=? AND task_id=?
+                  AND status IN ('running', 'in_progress')
+                  AND json_extract(payload_json, '$.worker_id')=?
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at>?
+                """,
+                (status, now, status, assignment_id, task_id, worker_id, now),
+            )
+            return updated.rowcount == 1
 
     def update_assignment_status(
         self,
