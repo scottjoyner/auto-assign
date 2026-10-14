@@ -344,6 +344,7 @@ def test_claim_assignment_transitions_to_running(tmp_path):
             "node_id": "node-claim",
             "capabilities": ["python"],
             "lease_seconds": 1200,
+            "dry_run": False,
         },
     )
 
