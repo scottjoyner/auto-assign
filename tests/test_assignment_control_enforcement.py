@@ -14,7 +14,8 @@ class FakeAssistXClient(AssistXClient):
         return {"reachable": True, "brain": "neo4j_via_assistx"}
 
     async def get_task(self, task_id: str):
-        return None
+        # A valid canonical source response is required for evaluation.
+        return AssignmentCandidate(task_id=task_id)
 
     async def get_backlog_candidates(self, limit: int = 25):
         return [AssignmentCandidate(task_id=f"ASS-{index}") for index in range(min(limit, 2))]
@@ -31,8 +32,14 @@ class FakeRouterClient(RouterClient):
         return RouterSnapshot(reachable=True, context_revision="test-rev")
 
 
+TEST_TOKEN = "synthetic-assignment-control-test-only"
+
+
 def make_client(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'control.sqlite3'}")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'control.sqlite3'}",
+        api_token=TEST_TOKEN,
+    )
     app.state.assignment_service = AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
@@ -40,7 +47,7 @@ def make_client(tmp_path):
         router=FakeRouterClient(settings),
         scorer=AssignmentScorer(settings),
     )
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Bearer " + TEST_TOKEN})
 
 
 def set_control(client: TestClient, mode: str) -> None:
@@ -99,9 +106,10 @@ def test_draining_control_blocks_scheduler_tick_without_evaluating_candidates(tm
     assert payload["decisions"] == []
 
     runs = client.get("/api/scheduler/runs").json()["runs"]
-    assert len(runs) == 1
-    assert "blocked_by_assignment_control:draining" in runs[0]["trigger_reason"]
-    assert "assignment control mode draining blocks scheduler ticks" in runs[0]["error_summary"]
+    assert runs == []  # A blocked dry-run cannot write a run record.
+    # The control change created a pending outbox event before the preview.
+    # The scheduler preview leaves this existing event untouched.
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
 
 
 def test_enabled_control_allows_scheduler_tick(tmp_path):
