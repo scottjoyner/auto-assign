@@ -60,8 +60,13 @@ class AssignmentService:
     def _control(self) -> dict:
         return AssignmentControlStore(self.settings.sqlite_path).get()
 
-    def _assignment_control_blocks_new_work(self) -> dict | None:
-        control = self._control()
+    def _assignment_control_blocks_new_work(
+        self, *, read_only: bool = False
+    ) -> dict | None:
+        control = (
+            AssignmentControlStore.peek_read_only(self.settings.sqlite_path)
+            if read_only else self._control()
+        )
         if control.get("new_assignments_allowed"):
             return None
         return control
@@ -172,7 +177,9 @@ class AssignmentService:
         return decision
 
     async def scheduler_tick(self, request: SchedulerTickRequest) -> SchedulerTickResponse:
-        blocked_control = self._assignment_control_blocks_new_work()
+        blocked_control = self._assignment_control_blocks_new_work(
+            read_only=request.dry_run
+        )
         if blocked_control:
             scheduler_run_id = f"tick_{uuid4().hex[:12]}"
             # Preview is read-only even when assignment control is paused.
