@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient
 from auto_assign.main import app
-from auto_assign.models import AssignmentCandidate, AssignmentEvaluateRequest
+from auto_assign.models import AssignmentCandidate, AssignmentEvaluateRequest, SchedulerTickRequest
 from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService, CanonicalTaskUnverified
 from auto_assign.settings import Settings
@@ -173,3 +173,63 @@ def test_unavailable_canonical_http_reads_return_no_candidate(tmp_path):
         assert asyncio.run(source.get_task(TASK_ID)) is None
     finally:
         asyncio.run(source.close())
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("failure", ["missing", "mismatched", "error"])
+def test_scheduler_full_batch_preflight_prevents_partial_assignment_effects(
+    tmp_path, dry_run, failure
+):
+    svc, upstream = service_for(tmp_path)
+    seen = []
+
+    async def resolve(task_id):
+        seen.append(task_id)
+        if task_id == "synthetic-first":
+            return AssignmentCandidate(task_id=task_id)
+        if failure == "error":
+            raise RuntimeError("synthetic sensitive client failure")
+        if failure == "mismatched":
+            return AssignmentCandidate(task_id="synthetic-other")
+        return None
+
+    upstream.get_task = resolve
+    req = SchedulerTickRequest(
+        task_ids=["synthetic-first", "synthetic-second"],
+        dry_run=dry_run,
+        limit=2,
+    )
+    with pytest.raises(CanonicalTaskUnverified):
+        asyncio.run(svc.scheduler_tick(req))
+    assert seen == ["synthetic-first", "synthetic-second"]
+    # The verified first task may not be scored or written if the second
+    # task cannot be verified. This must be all-or-nothing at the gate.
+    assert_no_assignment_effects(svc)
+
+
+def test_scheduler_endpoint_denies_unverified_canonical_task(tmp_path):
+    svc, upstream = service_for(tmp_path)
+    app.state.assignment_service = svc
+    client = TestClient(app, headers={"Authorization": f"Bearer {TEST_TOKEN}"})
+    result = client.post(
+        "/api/scheduler/tick",
+        json={"task_ids": [TASK_ID], "limit": 1, "dry_run": True},
+    )
+    assert result.status_code == 503
+    assert result.json() == {
+        "detail": "canonical task identity unavailable; assignment denied"
+    }
+    assert upstream.calls == 1
+    assert_no_assignment_effects(svc)
+
+
+def test_unverified_backlog_candidate_never_reaches_scorer(tmp_path):
+    svc, upstream = service_for(tmp_path)
+
+    async def backlog(limit):
+        return [AssignmentCandidate(task_id=TASK_ID)]
+
+    upstream.get_backlog_candidates = backlog
+    with pytest.raises(CanonicalTaskUnverified):
+        asyncio.run(svc.scheduler_tick(SchedulerTickRequest(dry_run=True, limit=1)))
+    assert_no_assignment_effects(svc)
