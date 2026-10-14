@@ -94,9 +94,16 @@ class AssistXClient:
                     # A 200 response without an explicit matching canonical
                     # identity is NOT verification. The generic candidate
                     # projection can otherwise invent an ID from 'title'.
-                    if not isinstance(payload, dict) or not any(
-                        payload.get(field) == task_id
+                    if not isinstance(payload, dict):
+                        return None
+                    identities = [
+                        payload[field]
                         for field in ("task_id", "id", "uuid")
+                        if payload.get(field) is not None
+                    ]
+                    if not identities or any(
+                        not isinstance(identity, str) or identity != task_id
+                        for identity in identities
                     ):
                         return None
                     candidate = self._candidate_from_item(payload)
