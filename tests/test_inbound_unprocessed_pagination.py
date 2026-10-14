@@ -6,12 +6,10 @@ SQLite database. No live receiver, graph, HTTP requests or admission calls.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-
 import pytest
 
 from auto_assign.cache import CacheStore
-from auto_assign.models import EventEnvelope, Lane
+from auto_assign.models import EventEnvelope
 from auto_assign.service import AssignmentService
 
 EVENT = "task.candidate.created"
@@ -110,27 +108,25 @@ def test_synthetic_dry_run_processor_pages_oldest_eligible_first(tmp_path):
     try:
         processor = object.__new__(AssignmentService)
         processor.cache = cache
-        seen = []
+        async def must_not_evaluate(_request):
+            raise AssertionError("dry-run preview must not evaluate assignments")
 
-        async def synthetic_evaluate(request):
-            assert request.dry_run is True
-            seen.append(request.task_id)
-            return SimpleNamespace(
-                assignment_id=f"synthetic-assignment-{request.task_id}",
-                selected_lane=Lane.BLOCKED,
-            )
-
-        processor.evaluate = synthetic_evaluate
+        processor.evaluate = must_not_evaluate
+        before = cache.connect().total_changes
         first = asyncio.run(processor.process_inbound_events(
             event_type=EVENT, dry_run=True, limit=2,
         ))
         second = asyncio.run(processor.process_inbound_events(
             event_type=EVENT, dry_run=True, limit=2,
         ))
-        assert first["processed"] == 2
-        assert second["processed"] == 1
-        assert seen == ["synthetic-000", "synthetic-001", "synthetic-002"]
-        assert cache.list_unprocessed_inbound_events(limit=25, event_type=EVENT) == []
-        # The dry-run evidence exists only in this disposable SQLite database.
+        assert first["processed"] == second["processed"] == 0
+        assert first["would_process"] == second["would_process"] == 2
+        assert all(
+            action["action"] == "would_evaluate_assignment"
+            for action in first["actions"]
+        )
+        assert first["read_only_preview"] is True
+        assert cache.connect().total_changes == before
+        assert len(cache.list_unprocessed_inbound_events(limit=25, event_type=EVENT)) == 3
     finally:
         cache.close()
