@@ -14,7 +14,6 @@ from auto_assign.cache import CacheStore
 from auto_assign.models import EventEnvelope, Lane
 from auto_assign.service import AssignmentService
 
-
 EVENT = "task.candidate.created"
 
 
