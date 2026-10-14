@@ -44,7 +44,7 @@ def test_outbox_default_preview_skips_remote_acks_and_sqlite_writes(
         assert body["delivered"] == body["failed"] == 0
         assert body["summary"] == {"pending": 1}
         assert body["dry_run_events"] == [
-            {"event_type": "assign.decision", "action": "would_check_and_dispatch"}
+            {"event_type": "assign.assignment.recommended", "action": "would_check_and_dispatch"}
         ]
         assert "idempotency_key" not in str(body)
         assert "synthetic-outbox-preview" not in str(body)
