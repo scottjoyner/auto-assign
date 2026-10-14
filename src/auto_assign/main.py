@@ -642,15 +642,34 @@ async def dispatch_outbox(
     dry_run: bool = Query(default=True),
     limit: int = Query(default=25, ge=1, le=500),
 ):
-    # Honour dry_run from either the query param or the JSON body, so API
-    # callers sending {"dry_run": false} in the body are not silently forced
-    # into dry-run (the previous Query-only default dropped body values).
-    try:
-        body = await request.json()
-        if isinstance(body, dict) and "dry_run" in body:
-            dry_run = bool(body["dry_run"])
-    except Exception:
-        pass
+    # Never truth-coerce a JSON string like "false" to True, or silently
+    # pick one of two conflicting write/preview instructions. Only literal
+    # JSON booleans can override the query default.
+    raw_body = await request.body()
+    if raw_body:
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="outbox dispatch body must be valid JSON"
+            ) from None
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422, detail="outbox dispatch body must be a JSON object"
+            )
+        if "dry_run" in body:
+            if type(body["dry_run"]) is not bool:
+                raise HTTPException(
+                    status_code=422, detail="dry_run must be a JSON boolean"
+                )
+            if (
+                "dry_run" in request.query_params
+                and body["dry_run"] != dry_run
+            ):
+                raise HTTPException(
+                    status_code=422, detail="conflicting dry_run instructions"
+                )
+            dry_run = body["dry_run"]
     return await service.dispatch_outbox(dry_run=dry_run, limit=limit)
 
 
