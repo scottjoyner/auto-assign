@@ -2,8 +2,6 @@
 
 Uses only FastAPI TestClient and disposable SQLite; no live services.
 """
-import sqlite3
-
 import pytest
 
 from test_api import create_assignment, make_client
@@ -58,19 +56,19 @@ def test_explicit_control_apply_only_in_synthetic_cache(tmp_path):
     assert client.get("/api/assignment-control").json()["mode"] == "paused"
 
 
-@pytest.mark.parametrize("route,request", [
+@pytest.mark.parametrize("route,payload", [
     ("approve", {"approved_by": "test", "approval_reason": "synthetic"}),
     ("release", {"reason": "synthetic", "retryable": True}),
 ])
 def test_default_assignment_action_preview_never_enqueues(
-    tmp_path, route, request
+    tmp_path, route, payload
 ):
     client = make_client(tmp_path)
     assignment = create_assignment(client, "synthetic-already-recorded")
     before = witness(client)
     api = f"/api/assignments/{assignment['assignment_id']}/{route}"
     for _ in range(2):
-        response = client.post(api, json=request)
+        response = client.post(api, json=payload)
         assert response.status_code == 200
         body = response.json()
         assert body["accepted"] is False
@@ -82,19 +80,19 @@ def test_default_assignment_action_preview_never_enqueues(
         assert witness(client) == before
 
 
-@pytest.mark.parametrize("route,request", [
+@pytest.mark.parametrize("route,payload", [
     ("approve", {"approved_by": "test", "approval_reason": "synthetic"}),
     ("release", {"reason": "synthetic", "retryable": True}),
 ])
 def test_explicit_non_dry_run_action_enqueues_synthetic_event(
-    tmp_path, route, request
+    tmp_path, route, payload
 ):
     client = make_client(tmp_path)
     assignment = create_assignment(client, "synthetic-event")
     before = witness(client)
     response = client.post(
         f"/api/assignments/{assignment['assignment_id']}/{route}",
-        json={**request, "dry_run": False},
+        json={**payload, "dry_run": False},
     )
     assert response.status_code == 200
     assert response.json()["accepted"] is True
