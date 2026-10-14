@@ -47,8 +47,14 @@ class FakeRouterClient(RouterClient):
         return RouterSnapshot(reachable=True, context_revision="test-rev")
 
 
+SYNTHETIC_TEST_TOKEN = "synthetic-test-auth-not-for-real-services"
+
+
 def make_service(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}",
+        api_token=SYNTHETIC_TEST_TOKEN,
+    )
     return AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
@@ -60,7 +66,7 @@ def make_service(tmp_path):
 
 def make_client(tmp_path):
     app.state.assignment_service = make_service(tmp_path)
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
 
 def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
@@ -157,14 +163,15 @@ def test_process_task_candidate_event_triggers_dry_run_assignment(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processed"] == 1
-    assert payload["actions"][0]["action"] == "assignment_evaluated"
-    assert payload["actions"][0]["task_id"] == "ASS-trigger"
-    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+    assert payload["processed"] == 0
+    assert payload["would_process"] == 1
+    assert payload["read_only_preview"] is True
+    assert payload["actions"][0]["action"] == "would_evaluate_assignment"
+    assert client.get("/api/outbox/summary").json()["summary"] == {}
 
     processing = client.get("/api/events/processing").json()
     assert processing["source"] == "sqlite_inbound_processing_cache"
-    assert processing["processing"][0]["status"] == "assignment_evaluated"
+    assert processing["processing"] == []
 
 
 def test_processed_inbound_event_is_not_reprocessed_by_default(tmp_path):
@@ -182,10 +189,10 @@ def test_processed_inbound_event_is_not_reprocessed_by_default(tmp_path):
     first = client.post("/api/events/process?event_type=task.candidate.created&dry_run=true").json()
     second = client.post("/api/events/process?event_type=task.candidate.created&dry_run=true").json()
 
-    assert first["processed"] == 1
-    assert second["processed"] == 0
-    assert second["skipped_already_processed"] == 1
-    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
+    assert first["processed"] == second["processed"] == 0
+    assert first["would_process"] == second["would_process"] == 1
+    assert second["skipped_already_processed"] == 0
+    assert client.get("/api/outbox/summary").json()["summary"] == {}
 
 
 def test_processed_inbound_event_can_be_replayed_explicitly(tmp_path):
@@ -200,13 +207,15 @@ def test_processed_inbound_event_can_be_replayed_explicitly(tmp_path):
         },
     )
 
-    client.post("/api/events/process?event_type=task.candidate.created&dry_run=true")
+    # Only an explicit non-dry-run invocation processes a synthetic event.
+    client.post("/api/events/process?event_type=task.candidate.created&dry_run=false")
     replay = client.post(
         "/api/events/process?event_type=task.candidate.created&dry_run=true&include_processed=true"
     ).json()
 
-    assert replay["processed"] == 1
-    assert replay["actions"][0]["action"] == "assignment_evaluated"
+    assert replay["processed"] == 0
+    assert replay["would_process"] == 1
+    assert replay["actions"][0]["action"] == "would_evaluate_assignment"
 
 
 def test_process_router_snapshot_event_triggers_scheduler_tick(tmp_path):
@@ -226,10 +235,10 @@ def test_process_router_snapshot_event_triggers_scheduler_tick(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processed"] == 1
-    assert payload["actions"][0]["action"] == "scheduler_tick"
-    assert payload["actions"][0]["evaluated"] == 2
-    assert len(client.get("/api/scheduler/runs").json()["runs"]) == 1
+    assert payload["processed"] == 0
+    assert payload["would_process"] == 1
+    assert payload["actions"][0]["action"] == "would_trigger_scheduler_tick"
+    assert len(client.get("/api/scheduler/runs").json()["runs"]) == 0
 
 
 def test_evaluate_assignment_writes_cache_outbox(tmp_path):
@@ -262,7 +271,7 @@ def test_stale_heartbeat_watchdog_reports_cache_visibility(tmp_path):
 def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
     service = make_service(tmp_path)
     app.state.assignment_service = service
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
     payload = create_assignment(client, "ASS-reconcile")
     key = payload["idempotency_key"]
@@ -505,7 +514,7 @@ def test_api_auth_enforced_when_token_set(tmp_path):
         scorer=AssignmentScorer(settings),
     )
     app.state.assignment_service = svc
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
     # health stays open
     assert client.get("/health").status_code == 200

@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-from .cache import CacheStore
-from .clients import AssistXClient, RouterClient
-from .control import AssignmentControlStore
-from .events import EventType, ROUTER_SNAPSHOT_EVENTS
-from .models import (
+from .cache import CacheStore  # noqa: E402
+from .clients import AssistXClient, RouterClient  # noqa: E402
+from .control import AssignmentControlStore  # noqa: E402
+from .events import ROUTER_SNAPSHOT_EVENTS, EventType  # noqa: E402
+from .models import (  # noqa: E402
     AssignmentApprovalRequest,
     AssignmentCandidate,
     AssignmentClaimRequest,
@@ -22,15 +23,14 @@ from .models import (
     AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
-    Lane,
     RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,
     correlation_for_task,
     utc_now,
 )
-from .scorer import AssignmentScorer
-from .settings import Settings
+from .scorer import AssignmentScorer  # noqa: E402
+from .settings import Settings  # noqa: E402
 
 
 class AssignmentService:
@@ -331,10 +331,47 @@ class AssignmentService:
         limit: int = 25,
         include_processed: bool = False,
     ) -> dict:
-        events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
+        # Select eligibility before applying LIMIT. Newest-first paging
+        # followed by in-Python processed filtering can strand thousands of
+        # older unprocessed receipts indefinitely. Selection has no effects.
+        events = (
+            self.cache.list_inbound_events(limit=limit, event_type=event_type)
+            if include_processed
+            else self.cache.list_unprocessed_inbound_events(
+                limit=limit, event_type=event_type
+            )
+        )
+        # Historically "dry_run=true" still wrote assignment cache/outbox
+        # and inbound processing markers. That is NOT a safe preview on a
+        # historical backlog. Strictly return only a read-only eligibility
+        # plan; do not call evaluate(), scheduler_tick(), or mark processed.
+        router_snapshot_event_types = {str(kind) for kind in ROUTER_SNAPSHOT_EVENTS}
+        if dry_run:
+            preview = []
+            for event_row in events:
+                event = event_row["payload"]
+                event_name = event.get("event_type")
+                if event_name == EventType.TASK_CANDIDATE_CREATED:
+                    action = "would_evaluate_assignment"
+                elif event_name in router_snapshot_event_types:
+                    action = "would_trigger_scheduler_tick"
+                else:
+                    action = "would_ignore"
+                preview.append(
+                    {"event_type": event_name, "action": action, "dry_run": True}
+                )
+            return {
+                "processed": 0,
+                "would_process": len(preview),
+                "skipped_already_processed": 0,
+                "actions": preview,
+                "dry_run": True,
+                "read_only_preview": True,
+                "source": "sqlite_inbound_event_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         actions: list[dict] = []
         skipped_already_processed = 0
-        router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
             if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
