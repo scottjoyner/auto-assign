@@ -100,7 +100,7 @@ class TestSchedulerTick:
     async def test_scheduler_tick_records_run(self, tmp_path):
         svc = make_service(tmp_path)
         await svc.scheduler_tick(
-            SchedulerTickRequest(dry_run=True, limit=1, reason="test")
+            SchedulerTickRequest(dry_run=False, limit=1, reason="test")
         )
         runs = svc.list_scheduler_runs()
         assert len(runs) == 1
