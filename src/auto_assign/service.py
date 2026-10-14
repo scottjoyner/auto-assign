@@ -297,6 +297,16 @@ class AssignmentService:
                 "reason": "assignment_not_found_in_local_cache",
                 "canonical_source": "neo4j_via_assistx",
             }
+        if request.dry_run:
+            return {
+                "accepted": False,
+                "preview": True,
+                "dry_run": True,
+                "reason": "approval_preview_only_no_event_enqueued",
+                "would_emit_event_type": str(EventType.ASSIGNMENT_APPROVED),
+                "canonical_source": "neo4j_via_assistx",
+                "cache_role": "read_only_assignment_preview",
+            }
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_APPROVED,
             idempotency_key=f"{EventType.ASSIGNMENT_APPROVED}:{assignment_id}:{request.approved_by}:{request.approval_reason}",
@@ -346,6 +356,16 @@ class AssignmentService:
                 "accepted": False,
                 "reason": "assignment_not_found_in_local_cache",
                 "canonical_source": "neo4j_via_assistx",
+            }
+        if request.dry_run:
+            return {
+                "accepted": False,
+                "preview": True,
+                "dry_run": True,
+                "reason": "release_preview_only_no_event_enqueued",
+                "would_emit_event_type": str(EventType.ASSIGNMENT_RELEASED),
+                "canonical_source": "neo4j_via_assistx",
+                "cache_role": "read_only_assignment_preview",
             }
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_RELEASED,
