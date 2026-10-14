@@ -142,6 +142,7 @@ class TestHeartbeat:
             "assign-1",
             status="in_progress",
             worker_id="worker-1",
+            lease_expires_at=(utc_now().timestamp() + 1800),
         )
 
         heartbeat = HeartbeatRequest(
