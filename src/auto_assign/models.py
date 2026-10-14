@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -216,6 +216,7 @@ class AssignmentClaimRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     lease_seconds: int = Field(default=900, ge=60, le=86400)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = True
 
 
 class AssignmentCompletionRequest(BaseModel):
@@ -223,7 +224,8 @@ class AssignmentCompletionRequest(BaseModel):
     assignment_id: str
     task_id: str
     worker_id: str
-    status: str = "success"
+    status: Literal["success", "failure"] = "success"
     summary: str = ""
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = True
