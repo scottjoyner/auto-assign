@@ -7,7 +7,6 @@ import pytest
 
 from auto_assign.models import HeartbeatRequest
 from test_api import create_assignment, make_client
-
 from test_atomic_claim_completion import claim, complete
 
 
@@ -47,7 +46,8 @@ def test_heartbeat_never_shortens_longer_current_lease(tmp_path):
     with client.app.state.assignment_service.cache.connect() as db:
         import json
         row=db.execute("SELECT payload_json FROM assignments WHERE assignment_id=?", (assignment["assignment_id"],)).fetchone()
-        payload=json.loads(row["payload_json"]);payload["lease_expires_at"]=future
+        payload=json.loads(row["payload_json"])
+        payload["lease_expires_at"]=future
         db.execute(
             "UPDATE assignments SET lease_expires_at=?,payload_json=? WHERE assignment_id=?",
             (future,json.dumps(payload),assignment["assignment_id"]),
