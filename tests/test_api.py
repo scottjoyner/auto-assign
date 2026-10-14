@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.main import app
+from auto_assign.models import AssignmentCandidate
 from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService
 from auto_assign.settings import Settings
@@ -18,7 +19,8 @@ class FakeAssistXClient(AssistXClient):
         return {"reachable": True, "brain": "neo4j_via_assistx"}
 
     async def get_task(self, task_id: str):
-        return None
+        # A valid canonical source response is required for evaluation.
+        return AssignmentCandidate(task_id=task_id)
 
     async def get_backlog_candidates(self, limit: int = 25):
         from auto_assign.models import AssignmentCandidate
