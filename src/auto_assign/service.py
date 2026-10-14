@@ -814,18 +814,18 @@ class AssignmentService:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
             return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        if assignment.get("task_id") != request.task_id:
+            return {"accepted": False, "reason": "assignment_task_identity_mismatch"}
         if assignment.get("status") not in ("recommended", "reserved"):
-            return {"accepted": False, "reason": f"assignment status '{assignment.get('status')}' is not claimable"}
+            return {"accepted": False, "reason": "assignment_not_claimable"}
 
         now = utc_now()
         lease_expires = now.timestamp() + request.lease_seconds
-        self.cache.update_assignment_status(
-            assignment_id,
-            status="running",
-            worker_id=request.worker_id,
-            node_id=request.node_id,
-            lease_expires_at=lease_expires,
-        )
+        if not self.cache.claim_assignment_if_unowned(
+            assignment_id, request.task_id, request.worker_id,
+            request.node_id, lease_expires,
+        ):
+            return {"accepted": False, "reason": "assignment_claim_state_changed"}
 
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_CLAIMED,
@@ -864,9 +864,16 @@ class AssignmentService:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
             return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        if request.assignment_id != assignment_id or request.task_id != assignment.get("task_id"):
+            return {"accepted": False, "reason": "assignment_identity_mismatch"}
+        if assignment.get("worker_id") != request.worker_id:
+            return {"accepted": False, "reason": "assignment_worker_mismatch"}
 
         status = "done" if request.status == "success" else "failed"
-        self.cache.update_assignment_status(assignment_id, status=status)
+        if not self.cache.complete_assignment_if_owned(
+            assignment_id, request.task_id, request.worker_id, status
+        ):
+            return {"accepted": False, "reason": "assignment_not_active_or_lease_expired"}
 
         event_type = EventType.ASSIGNMENT_COMPLETED if status == "done" else EventType.ASSIGNMENT_FAILED
         event = EventEnvelope(
