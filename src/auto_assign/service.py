@@ -710,8 +710,25 @@ class AssignmentService:
         await asyncio.gather(*(_one(t.get("id") or t.get("task_id")) for t in dispatchable))
         return {"dry_run": False, "considered": len(ready), "enqueued": enqueued, "failed": failed, "skipped": skipped}
 
-    async def reconcile_outbox(self, limit: int = 100) -> dict:
+    async def reconcile_outbox(
+        self, limit: int = 100, dry_run: bool = True
+    ) -> dict:
         events = self.cache.pending_events(limit=limit)
+        if dry_run:
+            # A preview is a bounded LOCAL SELECT only. Do not call remote
+            # status (which can leak receipt keys) or mark ACK/dead-letter
+            # state; do not return IDs, payloads or opaque remote responses.
+            return {
+                "dry_run": True,
+                "read_only_preview": True,
+                "checked": 0,
+                "would_check": len(events),
+                "reconciled_delivered": 0,
+                "conflicts_dead_lettered": 0,
+                "conflicts": [],
+                "summary": self.cache.outbox_summary(),
+                "canonical_source": "neo4j_via_assistx",
+            }
         delivered_keys: list[str] = []
         conflicts: list[dict] = []
         for event in events:
@@ -723,6 +740,8 @@ class AssignmentService:
                 conflicts.append({"idempotency_key": event.idempotency_key, "status": status})
         reconciled = self.cache.reconcile_delivered(delivered_keys)
         return {
+            "dry_run": False,
+            "read_only_preview": False,
             "checked": len(events),
             "reconciled_delivered": reconciled,
             "conflicts_dead_lettered": len(conflicts),
