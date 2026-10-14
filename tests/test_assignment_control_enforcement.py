@@ -106,9 +106,8 @@ def test_draining_control_blocks_scheduler_tick_without_evaluating_candidates(tm
     assert payload["decisions"] == []
 
     runs = client.get("/api/scheduler/runs").json()["runs"]
-    assert len(runs) == 1
-    assert "blocked_by_assignment_control:draining" in runs[0]["trigger_reason"]
-    assert "assignment control mode draining blocks scheduler ticks" in runs[0]["error_summary"]
+    assert runs == []  # A blocked dry-run cannot write a run record.
+    assert client.get("/api/outbox/summary").json()["summary"] == {}
 
 
 def test_enabled_control_allows_scheduler_tick(tmp_path):
