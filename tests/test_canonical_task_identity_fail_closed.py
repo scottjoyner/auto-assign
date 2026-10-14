@@ -18,7 +18,6 @@ from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService, CanonicalTaskUnverified
 from auto_assign.settings import Settings
 
-
 TEST_TOKEN = "synthetic-canonical-task-verification-test-only"
 TASK_ID = "synthetic-canonical-task"
 
@@ -64,7 +63,7 @@ def service_for(tmp_path, result=None, error=None):
 def assert_no_assignment_effects(svc):
     with svc.cache.connect() as conn:
         assert conn.execute("SELECT count(*) FROM assignments").fetchone()[0] == 0
-        assert conn.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM outbox_events").fetchone()[0] == 0
         assert conn.execute(
             "SELECT count(*) FROM inbound_event_processing"
         ).fetchone()[0] == 0
