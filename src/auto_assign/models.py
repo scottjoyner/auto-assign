@@ -208,10 +208,10 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AssignmentClaimRequest(BaseModel):
-    correlation_id: str
-    task_id: str
+    correlation_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
     route_id: str | None = None
-    worker_id: str
+    worker_id: str = Field(min_length=1)
     node_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     lease_seconds: int = Field(default=900, ge=60, le=86400)
@@ -220,10 +220,10 @@ class AssignmentClaimRequest(BaseModel):
 
 
 class AssignmentCompletionRequest(BaseModel):
-    correlation_id: str
-    assignment_id: str
-    task_id: str
-    worker_id: str
+    correlation_id: str = Field(min_length=1)
+    assignment_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
     status: Literal["success", "failure"] = "success"
     summary: str = ""
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
