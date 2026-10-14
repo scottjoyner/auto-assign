@@ -40,7 +40,7 @@ def make_service(tmp_path):
 async def test_approval_required_decision_emits_approval_required_event(tmp_path):
     service = make_service(tmp_path)
 
-    decision = await service.evaluate(AssignmentEvaluateRequest(task_id="ASS-approval-event"))
+    decision = await service.evaluate(AssignmentEvaluateRequest(task_id="ASS-approval-event", dry_run=False))
 
     events = service.list_outbox_events()
     assert decision.status == "approval_required"
@@ -52,7 +52,7 @@ async def test_blocked_nonapproval_decision_emits_skipped_event(tmp_path):
     service = make_service(tmp_path)
 
     decision = await service.evaluate(
-        AssignmentEvaluateRequest(task_id="ASS-skipped-event", candidate_lanes=[])
+        AssignmentEvaluateRequest(task_id="ASS-skipped-event", candidate_lanes=[], dry_run=False)
     )
 
     events = service.list_outbox_events()

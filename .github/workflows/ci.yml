@@ -32,5 +32,11 @@ jobs:
         run: ruff check src tests
       - name: Compile
         run: python -m compileall src tests
-      - name: Test
-        run: pytest -q
+      - name: Unit and contract tests (no external fleet services)
+        run: pytest -q --ignore=tests/integration
+      - name: Document separate live integration gate
+        if: always()
+        run: |
+          echo "Live AssistX / Router / Auto-Assign integration was NOT executed in hosted CI." >> "$GITHUB_STEP_SUMMARY"
+          echo "The six tests under tests/integration require an independently authorized running stack." >> "$GITHUB_STEP_SUMMARY"
+          echo "Do not treat this workflow as live deployment or credential-rotation acceptance." >> "$GITHUB_STEP_SUMMARY"

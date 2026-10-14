@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import timedelta
+from collections.abc import Callable
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +266,38 @@ class CacheStore:
             rows = conn.execute(sql, params).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def list_unprocessed_inbound_events(
+        self, limit: int = 50, event_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Oldest eligible inbound receipts, not the newest cached N rows.
+
+        Filtering after a newest-first LIMIT can permanently starve old
+        unprocessed receipts behind already processed ones. This method is a
+        read-only SELECT; callers decide whether and how to process events.
+        """
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("unprocessed receipt page limit must be 1..500")
+        sql = """
+            SELECT e.event_id, e.event_type, e.source_service,
+                   e.idempotency_key, e.subject, e.payload_json,
+                   e.received_at, e.created_at, e.updated_at
+            FROM inbound_events AS e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM inbound_event_processing AS p
+                WHERE p.idempotency_key = e.idempotency_key
+            )
+        """
+        params: tuple[Any, ...]
+        if event_type is not None:
+            sql += " AND e.event_type = ?"
+            params = (event_type, limit)
+        else:
+            params = (limit,)
+        sql += " ORDER BY e.received_at ASC, e.idempotency_key ASC LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
     def inbound_summary(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -375,6 +409,58 @@ class CacheStore:
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
 
+    def renew_assignment_lease_if_owned(
+        self, assignment_id: str, worker_id: str, new_expiry: float
+    ) -> float | None:
+        """CAS-like monotonic local lease renewal. Not graph authority."""
+        now = utc_now()
+        candidate = datetime.fromtimestamp(new_expiry, tz=UTC)
+        with closing(sqlite3.connect(str(self.path), timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, lease_expires_at, payload_json "
+                    "FROM assignments WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchone()
+                if row is None or row["status"] not in ("running", "in_progress"):
+                    conn.rollback()
+                    return None
+                prior = json.loads(row["payload_json"])
+                if prior.get("worker_id") != worker_id:
+                    conn.rollback()
+                    return None
+                try:
+                    current = datetime.fromisoformat(row["lease_expires_at"])
+                    if current.tzinfo is None or current <= now:
+                        raise ValueError("inactive lease")
+                except (TypeError, ValueError):
+                    conn.rollback()
+                    return None
+                updated_expiry = max(current, candidate)
+                prior["lease_expires_at"] = updated_expiry.isoformat()
+                changed = conn.execute(
+                    "UPDATE assignments SET lease_expires_at=?, "
+                    "payload_json=?, updated_at=? WHERE assignment_id=? "
+                    "AND status=? AND lease_expires_at=?",
+                    (
+                        updated_expiry.isoformat(),
+                        json.dumps(prior, sort_keys=True),
+                        now.isoformat(), assignment_id, row["status"],
+                        row["lease_expires_at"],
+                    ),
+                )
+                if changed.rowcount != 1:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return updated_expiry.timestamp()
+            except Exception:
+                conn.rollback()
+                raise
+
     def update_assignment_status(
         self,
         assignment_id: str,
@@ -393,8 +479,8 @@ class CacheStore:
         if lease_expires_at is not None:
             updates.append("lease_expires_at=?")
             if isinstance(lease_expires_at, (int, float)):
-                from datetime import datetime, timezone
-                lease_value = datetime.fromtimestamp(lease_expires_at, tz=timezone.utc).isoformat()
+                from datetime import datetime
+                lease_value = datetime.fromtimestamp(lease_expires_at, tz=UTC).isoformat()
             else:
                 lease_value = lease_expires_at
             params.append(lease_value)
@@ -422,6 +508,120 @@ class CacheStore:
                         (json.dumps(payload, sort_keys=True), assignment_id),
                     )
             return cursor.rowcount > 0
+
+    def transition_assignment_with_event(
+        self,
+        assignment_id: str,
+        *,
+        expected_task_id: str,
+        allowed_statuses: tuple[str, ...],
+        new_status: str,
+        event_factory: Callable[[dict[str, Any], float | None], EventEnvelope],
+        claiming_worker: str | None = None,
+        node_id: str | None = None,
+        require_worker: str | None = None,
+        lease_seconds: int | None = None,
+        require_live_lease: bool = False,
+    ) -> tuple[EventEnvelope | None, str | None]:
+        """Atomic, conditional local transition + outbox insert.
+
+        Uses a separate writer transaction (BEGIN IMMEDIATE) so competing
+        claim/complete requests cannot both win after observing old state.
+        This is NOT distributed authorization or canonical-graph fencing.
+        """
+        now = utc_now()
+        with closing(sqlite3.connect(str(self.path), timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT task_id, status, lease_expires_at, payload_json "
+                    "FROM assignments WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchone()
+                if row is None:
+                    conn.rollback()
+                    return None, "assignment_not_found_in_local_cache"
+                prior = json.loads(row["payload_json"])
+                if (
+                    row["task_id"] != expected_task_id
+                    or prior.get("task_id") != expected_task_id
+                ):
+                    conn.rollback()
+                    return None, "assignment_task_identity_mismatch"
+                if row["status"] not in allowed_statuses:
+                    conn.rollback()
+                    return None, "assignment_not_in_expected_state"
+                if require_worker is not None and prior.get("worker_id") != require_worker:
+                    conn.rollback()
+                    return None, "assignment_worker_identity_mismatch"
+                if require_live_lease:
+                    try:
+                        stored_lease = datetime.fromisoformat(row["lease_expires_at"])
+                        if stored_lease.tzinfo is None or stored_lease <= now:
+                            raise ValueError("expired or timezone-free lease")
+                    except (TypeError, ValueError):
+                        conn.rollback()
+                        return None, "assignment_lease_not_active"
+
+                lease_epoch = None
+                lease_iso = None
+                if lease_seconds is not None:
+                    expiration = now + timedelta(seconds=lease_seconds)
+                    lease_epoch = expiration.timestamp()
+                    lease_iso = expiration.isoformat()
+                new_payload = dict(prior)
+                new_payload["status"] = new_status
+                if claiming_worker is not None:
+                    new_payload["worker_id"] = claiming_worker
+                    if node_id is not None:
+                        new_payload["node_id"] = node_id
+                    new_payload["lease_expires_at"] = lease_iso
+                if require_live_lease:
+                    new_payload["lease_expires_at"] = None
+                event = event_factory(prior, lease_epoch)
+
+                updated = conn.execute(
+                    "UPDATE assignments SET status=?, payload_json=?, "
+                    "lease_expires_at=?, updated_at=? "
+                    "WHERE assignment_id=? AND task_id=? AND status=?",
+                    (
+                        new_status,
+                        json.dumps(new_payload, sort_keys=True),
+                        None if require_live_lease else lease_iso,
+                        now.isoformat(),
+                        assignment_id, expected_task_id, row["status"],
+                    ),
+                )
+                if updated.rowcount != 1:
+                    conn.rollback()
+                    return None, "assignment_state_race_denied"
+                inserted = conn.execute(
+                    """
+                    INSERT INTO outbox_events (
+                        event_id, event_type, idempotency_key, subject, payload_json,
+                        status, attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (
+                        event.event_id,
+                        event.event_type,
+                        event.idempotency_key,
+                        self._subject_storage_value(event.subject),
+                        event.model_dump_json(),
+                        now.isoformat(), now.isoformat(),
+                    ),
+                )
+                if inserted.rowcount != 1:
+                    conn.rollback()
+                    return None, "assignment_event_idempotency_conflict"
+                conn.commit()
+                return event, None
+            except Exception:
+                conn.rollback()
+                raise
 
     def expire_stale_assignments(self, stale_seconds: int = 3600) -> list[str]:
         cutoff = (utc_now() - timedelta(seconds=stale_seconds)).isoformat()
