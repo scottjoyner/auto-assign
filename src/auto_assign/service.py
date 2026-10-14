@@ -37,6 +37,10 @@ class CanonicalTaskUnverified(RuntimeError):
     """Canonical task identity could not be verified; no assignment effects."""
 
 
+class CanonicalTaskNotEligible(RuntimeError):
+    """Verified canonical task is not READY and cannot be assigned."""
+
+
 class AssignmentService:
     def __init__(
         self,
@@ -147,6 +151,10 @@ class AssignmentService:
             raise CanonicalTaskUnverified(
                 "canonical task identity unavailable; assignment denied"
             )
+        if candidate.status.strip().lower() != "ready":
+            raise CanonicalTaskNotEligible(
+                "canonical task is not READY; assignment denied"
+            )
         candidate.allowed_lanes = request.candidate_lanes
 
         blocked_control = self._assignment_control_blocks_new_work()
@@ -209,6 +217,10 @@ class AssignmentService:
             if canonical is None or canonical.task_id != listed.task_id:
                 raise CanonicalTaskUnverified(
                     "canonical task identity unavailable; assignment denied"
+                )
+            if canonical.status.strip().lower() != "ready":
+                raise CanonicalTaskNotEligible(
+                    "canonical task is not READY; assignment denied"
                 )
             verified_candidates.append(canonical)
 
