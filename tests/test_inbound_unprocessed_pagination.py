@@ -6,6 +6,7 @@ SQLite database. No live receiver, graph, HTTP requests or admission calls.
 from __future__ import annotations
 
 import asyncio
+
 import pytest
 
 from auto_assign.cache import CacheStore
