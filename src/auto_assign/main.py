@@ -15,10 +15,10 @@ from .logging_utils import install_logging_middleware, setup_logging
 from .metrics import CONTENT_TYPE_LATEST, OUTBOX_PENDING, STALE_HEARTBEATS, generate_latest
 
 _start_time = time.time()
-from .cache import CacheStore
-from .clients import AssistXClient, RouterClient
-from .control import AssignmentControlStore
-from .models import (
+from .cache import CacheStore  # noqa: E402
+from .clients import AssistXClient, RouterClient  # noqa: E402
+from .control import AssignmentControlStore  # noqa: E402
+from .models import (  # noqa: E402
     AssignmentApprovalRequest,
     AssignmentClaimRequest,
     AssignmentCompletionRequest,
@@ -30,9 +30,13 @@ from .models import (
     HeartbeatRequest,
     SchedulerTickRequest,
 )
-from .scorer import AssignmentScorer
-from .service import AssignmentService
-from .settings import Settings, get_settings
+from .scorer import AssignmentScorer  # noqa: E402
+from .service import (  # noqa: E402
+    AssignmentService,
+    CanonicalTaskNotEligible,
+    CanonicalTaskUnverified,
+)
+from .settings import Settings, get_settings  # noqa: E402
 
 
 def build_service(settings: Settings | None = None) -> AssignmentService:
@@ -103,7 +107,8 @@ app = FastAPI(
 setup_logging()
 install_logging_middleware(app)
 
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080,http://localhost:8090").split(","),
@@ -112,8 +117,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import base64
-import logging
+import base64  # noqa: E402
+import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +131,9 @@ async def api_auth_middleware(request: Request, call_next):
     """Enforce a shared-secret on every route except /health and /metrics.
 
     Auth is satisfied by either ``Authorization: Bearer <token>`` or HTTP Basic
-    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``. When no
-    token is configured the check is skipped (local-dev only) with a warning.
+    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``.
+    If the token is missing, protected routes MUST fail closed; local development
+    may use an explicit synthetic token but must never rely on implicit bypass.
     """
     settings = None
     svc = getattr(request.app.state, "assignment_service", None)
@@ -138,8 +144,10 @@ async def api_auth_middleware(request: Request, call_next):
     if request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
     if not settings.api_token:
-        logger.warning("API auth disabled: AUTO_ASSIGN_API_TOKEN is not set")
-        return await call_next(request)
+        logger.error("Protected API unavailable: AUTO_ASSIGN_API_TOKEN is not configured")
+        return JSONResponse(
+            status_code=503, content={"detail": "authentication unavailable"}
+        )
 
     auth_header = request.headers.get("Authorization", "")
     expected = settings.api_token
@@ -209,7 +217,8 @@ async def metrics():
 
 @app.get("/api/assignment-control")
 async def read_assignment_control(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
-    return get_assignment_control(service).get()
+    # GET must not create a control table or open a writable connection.
+    return AssignmentControlStore.peek_read_only(service.settings.sqlite_path)
 
 
 @app.post("/api/assignment-control")
@@ -217,13 +226,32 @@ async def set_assignment_control(
     request: AssignmentControlRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
+    if request.dry_run:
+        # A control preview must not invoke AssignmentControlStore.__init__,
+        # which creates SQLite schema, let alone change global authority.
+        current = AssignmentControlStore.peek_read_only(
+            service.settings.sqlite_path
+        )
+        return {
+            "accepted": False,
+            "applied": False,
+            "preview": True,
+            "dry_run": True,
+            "current_mode": current["mode"],
+            "would_set_mode": request.mode.value,
+            "assignment_allowed": current["assignment_allowed"],
+            "canonical_source": "neo4j_via_assistx",
+            "cache_role": "read_only_control_preview",
+        }
     state, event = get_assignment_control(service).set(request)
     service.cache.enqueue_event(event)
     return {
         **state,
+        "applied": True,
+        "preview": False,
         "event_id": event.event_id,
         "idempotency_key": event.idempotency_key,
-        "dry_run": request.dry_run,
+        "dry_run": False,
         "cache_role": "assignment_control_cache_and_outbox",
         "canonical_source": "neo4j_via_assistx",
     }
@@ -283,7 +311,18 @@ async def evaluate_assignment(
     request: AssignmentEvaluateRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
-    return await service.evaluate(request)
+    try:
+        return await service.evaluate(request)
+    except CanonicalTaskNotEligible:
+        raise HTTPException(
+            status_code=409,
+            detail="canonical task is not READY; assignment denied",
+        ) from None
+    except CanonicalTaskUnverified:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical task identity unavailable; assignment denied",
+        ) from None
 
 
 @app.post("/api/scheduler/tick")
@@ -291,7 +330,18 @@ async def scheduler_tick(
     request: SchedulerTickRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
-    return await service.scheduler_tick(request)
+    try:
+        return await service.scheduler_tick(request)
+    except CanonicalTaskNotEligible:
+        raise HTTPException(
+            status_code=409,
+            detail="canonical task is not READY; assignment denied",
+        ) from None
+    except CanonicalTaskUnverified:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical task identity unavailable; assignment denied",
+        ) from None
 
 
 @app.get("/api/scheduler/runs")
@@ -475,6 +525,8 @@ async def approve_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.approve_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=404, detail=result)
     return result
@@ -487,6 +539,8 @@ async def release_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.release_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=404, detail=result)
     return result
