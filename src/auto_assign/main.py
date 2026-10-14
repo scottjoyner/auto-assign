@@ -181,7 +181,7 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
     assistx = await service.assistx.health()
     router = await service.router.health()
     cache = service.cache.health()
-    control = get_assignment_control(service).get()
+    control = AssignmentControlStore.peek_read_only(service.settings.sqlite_path)
     deps_ok = cache.get("reachable") and assistx.get("reachable")
     status = "ok" if deps_ok else "degraded"
 
@@ -376,7 +376,7 @@ async def assignment_summary(
     ops = service.ops_summary()
     stale = service.list_stale_heartbeats(limit=limit)
     recent_assignments = service.list_assignments(limit=limit)
-    control = get_assignment_control(service).get()
+    control = AssignmentControlStore.peek_read_only(service.settings.sqlite_path)
     recommendations = _assignment_summary_recommendations(
         ops=ops,
         stale_count=stale.get("count", 0),
@@ -679,9 +679,13 @@ async def dispatch_outbox(
 @app.post("/api/outbox/reconcile")
 async def reconcile_outbox(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
+    dry_run: bool = Query(default=True),
     limit: int = Query(default=100, ge=1, le=1000),
 ):
-    return await service.reconcile_outbox(limit=limit)
+    # Default is a local-only preview. An explicit dry_run=false is a
+    # state-changing acknowledgement/dead-letter operation and requires
+    # independent operator authorization outside this source change.
+    return await service.reconcile_outbox(limit=limit, dry_run=dry_run)
 
 
 @app.get("/api/ops/summary")
