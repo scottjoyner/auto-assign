@@ -5,8 +5,6 @@ No real AssistX, Neo4j, Router, credential or production action is used.
 """
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from auto_assign.cache import CacheStore
@@ -78,7 +76,7 @@ async def test_ready_preview_keeps_all_local_state_unchanged(tmp_path, task_ids)
     )
     assert first.dry_run is True
     assert second.dry_run is True
-    assert first.evaluated == second.evaluated == 2
+    assert first.evaluated == second.evaluated == (2 if not task_ids else len(task_ids))
     assert first.released_expired == second.released_expired == 0
     assert first.decisions and second.decisions
     assert snapshot(svc) == before
