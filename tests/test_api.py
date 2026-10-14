@@ -302,7 +302,7 @@ def test_approve_assignment_enqueues_graph_event(tmp_path):
 
     response = client.post(
         f"/api/assignments/{assignment['assignment_id']}/approve",
-        json={"approved_by": "operator", "approval_reason": "test approval", "dry_run": True},
+        json={"approved_by": "operator", "approval_reason": "test approval", "dry_run": False},
     )
 
     assert response.status_code == 200
@@ -319,7 +319,7 @@ def test_release_assignment_enqueues_graph_event(tmp_path):
 
     response = client.post(
         f"/api/assignments/{assignment['assignment_id']}/release",
-        json={"reason": "test_release", "retryable": True, "dry_run": True},
+        json={"reason": "test_release", "retryable": True, "dry_run": False},
     )
 
     assert response.status_code == 200
