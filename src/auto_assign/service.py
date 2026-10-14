@@ -331,7 +331,16 @@ class AssignmentService:
         limit: int = 25,
         include_processed: bool = False,
     ) -> dict:
-        events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
+        # Select eligibility before applying LIMIT. Newest-first paging
+        # followed by in-Python processed filtering can strand thousands of
+        # older unprocessed receipts indefinitely. Selection has no effects.
+        events = (
+            self.cache.list_inbound_events(limit=limit, event_type=event_type)
+            if include_processed
+            else self.cache.list_unprocessed_inbound_events(
+                limit=limit, event_type=event_type
+            )
+        )
         actions: list[dict] = []
         skipped_already_processed = 0
         router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
