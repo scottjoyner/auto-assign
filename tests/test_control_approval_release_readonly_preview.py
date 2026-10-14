@@ -13,6 +13,28 @@ def witness(client):
         return "\n".join(db.iterdump()), db.total_changes
 
 
+def test_control_get_and_internal_reads_have_no_implicit_schema_writes(tmp_path):
+    client = make_client(tmp_path)
+    svc = client.app.state.assignment_service
+    before = witness(client)
+    with svc.cache.connect() as db:
+        schema_before = db.execute("PRAGMA schema_version").fetchone()[0]
+        assert db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='assignment_control'"
+        ).fetchone()[0] == 0
+    for _ in range(2):
+        response = client.get("/api/assignment-control")
+        assert response.status_code == 200
+        assert response.json()["mode"] == "enabled"
+        assert svc._control()["mode"] == "enabled"
+        assert witness(client) == before
+    with svc.cache.connect() as db:
+        assert db.execute("PRAGMA schema_version").fetchone()[0] == schema_before
+        assert db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='assignment_control'"
+        ).fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("mode", ["paused", "draining", "maintenance", "enabled"])
 def test_assignment_control_default_dry_run_never_changes_governor(tmp_path, mode):
     client = make_client(tmp_path)
