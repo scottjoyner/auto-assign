@@ -691,5 +691,5 @@ async def reconcile_outbox(
 @app.get("/api/ops/summary")
 async def ops_summary(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
     ops = service.ops_summary()
-    ops["control"] = get_assignment_control(service).get()
+    ops["control"] = AssignmentControlStore.peek_read_only(service.settings.sqlite_path)
     return ops
