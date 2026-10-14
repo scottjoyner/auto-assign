@@ -90,9 +90,45 @@ class AssistXClient:
             try:
                 response = await self._client.get(f"{self.base_url}{path}", headers=self._default_headers(), auth=self._auth)
                 if response.is_success:
-                    return self._candidate_from_item(response.json())
-            except Exception as exc:
-                logger.debug("get_task %s failed on %s: %s", task_id, path, exc)
+                    payload = response.json()
+                    # A 200 response without an explicit matching canonical
+                    # identity is NOT verification. The generic candidate
+                    # projection can otherwise invent an ID from 'title'.
+                    if not isinstance(payload, dict):
+                        return None
+                    # AssistX's real GET /api/tasks/{id} contract returns
+                    # {"task": {<Task properties>}, "transcription": ..., "runs": ...}.
+                    # A flat task body may also come from the alternate route.
+                    raw = payload.get("task", payload)
+                    if not isinstance(raw, dict):
+                        return None
+                    nested_ids = [
+                        raw[field]
+                        for field in ("task_id", "id", "uuid")
+                        if raw.get(field) is not None
+                    ]
+                    envelope_ids = [
+                        payload[field]
+                        for field in ("task_id", "id", "uuid")
+                        if payload.get(field) is not None
+                    ] if "task" in payload else []
+                    identities = nested_ids + envelope_ids
+                    if not identities or any(
+                        not isinstance(identity, str) or identity != task_id
+                        for identity in identities
+                    ):
+                        return None
+                    # Missing status may otherwise silently inherit the
+                    # AssignmentCandidate default 'ready'. Require the graph
+                    # to supply an explicit lifecycle state before scoring.
+                    if not isinstance(raw.get("status"), str) or not raw["status"].strip():
+                        return None
+                    candidate = self._candidate_from_item(raw)
+                    return candidate if candidate.task_id == task_id else None
+            except Exception:
+                # Do not log requested IDs, endpoint bodies, or exception text
+                # while credentials/graph identity remain under review.
+                logger.debug("canonical task read failed at approved endpoint")
                 continue
         return None
 
@@ -323,6 +359,11 @@ class RouterClient:
 
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
+        # A public legacy /admin/context 200 is NOT proof of administrative
+        # authorization. Missing credentials must not trigger anonymous probes
+        # or allow the scorer to promote a partially authenticated snapshot.
+        if not self._admin_token:
+            return snapshot
         try:
             hdrs = self._default_headers()
             context_resp, quota_resp, circuits_resp, clis_resp, ops_resp = await asyncio.gather(
@@ -332,15 +373,24 @@ class RouterClient:
                 self._client.get(f"{self.base_url}/admin/agent-clis", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/ops/summary", headers=hdrs),
             )
+            # Four required routes must return genuine 2xx responses. Some
+            # older routers do not implement /admin/agent-clis (404 allowed);
+            # any 401/403, redirect, rate limit or 5xx still fails closed.
+            if not all(resp.is_success for resp in (
+                context_resp, quota_resp, circuits_resp, ops_resp,
+            )):
+                return snapshot
+            if not (clis_resp.is_success or clis_resp.status_code == 404):
+                return snapshot
 
             self._apply_snapshot_payloads(
                 snapshot=snapshot,
-                context_payload=context_resp.json() if context_resp.is_success else {},
-                quota_payload=quota_resp.json() if quota_resp.is_success else {},
-                circuits_payload=circuits_resp.json() if circuits_resp.is_success else {},
+                context_payload=context_resp.json(),
+                quota_payload=quota_resp.json(),
+                circuits_payload=circuits_resp.json(),
                 clis_payload=clis_resp.json() if clis_resp.is_success else {},
-                ops_payload=ops_resp.json() if ops_resp.is_success else {},
-                reachable=context_resp.is_success,
+                ops_payload=ops_resp.json(),
+                reachable=True,
             )
         except Exception:
             snapshot.reachable = False
@@ -357,8 +407,20 @@ class RouterClient:
         reachable: bool = True,
     ) -> RouterSnapshot:
         context = self._unwrap_context(context_payload)
-        snapshot.reachable = bool(reachable and context)
-        snapshot.context_revision = self._context_revision(context)
+        revision = self._context_revision(context)
+        has_context_structure = any(
+            isinstance(context.get(key), (list, Mapping))
+            for key in ("providers", "models", "model_providers",
+                        "nodes", "workers", "worker_nodes", "hosts",
+                        "services", "endpoints", "routes")
+        )
+        snapshot.reachable = bool(
+            reachable and isinstance(revision, str) and revision.strip()
+            and has_context_structure
+        )
+        if not snapshot.reachable:
+            return snapshot
+        snapshot.context_revision = revision
         snapshot.nodes = self._payload_list(context, ("nodes", "workers", "worker_nodes", "hosts"))
         snapshot.providers = self._payload_list(context, ("providers", "models", "model_providers"))
         snapshot.services = self._payload_list(context, ("services", "endpoints", "routes"))

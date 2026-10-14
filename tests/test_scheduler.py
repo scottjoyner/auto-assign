@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.models import (
@@ -29,7 +30,7 @@ class FakeAssistXClient(AssistXClient):
         return {"reachable": True, "brain": "neo4j_via_assistx"}
 
     async def get_task(self, task_id: str):
-        return None
+        return AssignmentCandidate(task_id=task_id)
 
     async def get_backlog_candidates(self, limit: int = 25):
         return [AssignmentCandidate(task_id=f"ASS-{i}") for i in range(min(limit, 3))]
@@ -189,7 +190,6 @@ class TestExpireStaleLeases:
         assert result["events_emitted"] == 0
 
     def test_expire_stale_leases_expired(self, tmp_path):
-        import time
 
         svc = make_service(tmp_path)
         from auto_assign.models import AssignmentDecision
@@ -216,7 +216,6 @@ class TestExpireStaleLeases:
         assert result["events_emitted"] == 1
 
     def test_expire_stale_active_lease_skipped(self, tmp_path):
-        import time
 
         svc = make_service(tmp_path)
         from auto_assign.models import AssignmentDecision
