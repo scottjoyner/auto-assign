@@ -31,7 +31,7 @@ from .models import (  # noqa: E402
     SchedulerTickRequest,
 )
 from .scorer import AssignmentScorer  # noqa: E402
-from .service import AssignmentService  # noqa: E402
+from .service import AssignmentService, CanonicalTaskUnverified  # noqa: E402
 from .settings import Settings, get_settings  # noqa: E402
 
 
@@ -287,7 +287,13 @@ async def evaluate_assignment(
     request: AssignmentEvaluateRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
-    return await service.evaluate(request)
+    try:
+        return await service.evaluate(request)
+    except CanonicalTaskUnverified:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical task identity unavailable; assignment denied",
+        ) from None
 
 
 @app.post("/api/scheduler/tick")
