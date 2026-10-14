@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 from .models import AssignmentControlMode, AssignmentControlRequest, EventEnvelope, utc_now
@@ -92,6 +94,52 @@ class AssignmentControlStore:
             updated_by=row["updated_by"],
             updated_at=row["updated_at"],
             metadata=metadata,
+        )
+
+    @classmethod
+    def peek_read_only(cls, sqlite_path: Path) -> dict[str, Any]:
+        """Read control without DDL, file creation, or a writable connection.
+
+        CacheStore initializes its own schema, but a first call to the normal
+        AssignmentControlStore constructor performs CREATE TABLE IF NOT EXISTS.
+        A scheduler preview must never invoke that constructor.
+        """
+        db_path = sqlite_path.resolve()
+        uri = "file:" + quote(str(db_path), safe="/") + "?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=3)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA query_only=ON")
+                # Mirror historical default on an initialized cache where
+                # the control table has never been initialized.
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='assignment_control'"
+                ).fetchone()
+                row = (
+                    conn.execute(
+                        "SELECT * FROM assignment_control WHERE id='global'"
+                    ).fetchone()
+                    if exists else None
+                )
+        except sqlite3.Error:
+            # Do not fabricate an enabled control state if the cache itself
+            # is unreadable. A preview can safely return a blocked decision.
+            return control_state_for_mode(
+                AssignmentControlMode.PAUSED,
+                reason="assignment control unavailable in read-only preview",
+            )
+        if row is None:
+            return control_state_for_mode(
+                AssignmentControlMode.ENABLED,
+                reason="default enabled; no local assignment_control row exists yet",
+            )
+        return control_state_for_mode(
+            row["mode"],
+            reason=row["reason"],
+            updated_by=row["updated_by"],
+            updated_at=row["updated_at"],
+            metadata=json.loads(row["metadata_json"] or "{}"),
         )
 
     def set(self, request: AssignmentControlRequest) -> tuple[dict[str, Any], EventEnvelope]:
