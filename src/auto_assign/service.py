@@ -194,9 +194,27 @@ class AssignmentService:
         else:
             candidates = await self.assistx.get_backlog_candidates(limit=request.limit)
 
+        # Validate the ENTIRE batch against AssistX before any scoring,
+        # outbox writes, lease expiry, or scheduler-run recording. A stale
+        # backlog list or manually supplied task ID is not canonical proof.
+        verified_candidates: list[AssignmentCandidate] = []
+        for listed in candidates[: request.limit]:
+            try:
+                canonical = await self.assistx.get_task(listed.task_id)
+            except Exception:
+                logger.warning("scheduler canonical task lookup failed; tick denied")
+                raise CanonicalTaskUnverified(
+                    "canonical task identity unavailable; assignment denied"
+                ) from None
+            if canonical is None or canonical.task_id != listed.task_id:
+                raise CanonicalTaskUnverified(
+                    "canonical task identity unavailable; assignment denied"
+                )
+            verified_candidates.append(canonical)
+
         router_snapshot = await self.router.snapshot()
         decisions: list[AssignmentDecision] = []
-        for candidate in candidates[: request.limit]:
+        for candidate in verified_candidates:
             status = await self.assistx.event_status(
                 self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
             )
@@ -212,7 +230,7 @@ class AssignmentService:
         response = SchedulerTickResponse(
             scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
-            evaluated=len(candidates[: request.limit]),
+            evaluated=len(verified_candidates),
             recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
             approval_required=sum(1 for d in decisions if d.status == AssignmentStatus.APPROVAL_REQUIRED),
             skipped=sum(1 for d in decisions if d.status == AssignmentStatus.BLOCKED),
