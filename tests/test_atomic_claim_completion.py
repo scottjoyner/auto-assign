@@ -7,8 +7,6 @@ from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
-from fastapi.testclient import TestClient
-
 from test_api import create_assignment, make_client
 
 
