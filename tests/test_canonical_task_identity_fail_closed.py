@@ -15,7 +15,7 @@ from auto_assign.clients import AssistXClient
 from auto_assign.main import app
 from auto_assign.models import AssignmentCandidate, AssignmentEvaluateRequest, SchedulerTickRequest
 from auto_assign.scorer import AssignmentScorer
-from auto_assign.service import AssignmentService, CanonicalTaskUnverified
+from auto_assign.service import AssignmentService, CanonicalTaskNotEligible, CanonicalTaskUnverified
 from auto_assign.settings import Settings
 
 TEST_TOKEN = "synthetic-canonical-task-verification-test-only"
@@ -242,4 +242,79 @@ def test_unverified_backlog_candidate_never_reaches_scorer(tmp_path):
     upstream.get_backlog_candidates = backlog
     with pytest.raises(CanonicalTaskUnverified):
         asyncio.run(svc.scheduler_tick(SchedulerTickRequest(dry_run=True, limit=1)))
+    assert_no_assignment_effects(svc)
+
+
+@pytest.mark.parametrize("status", ["DONE", "FAILED", "PAUSED", "", "unknown"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_nonready_canonical_task_is_denied_before_any_effects(
+    tmp_path, status, dry_run
+):
+    svc, upstream = service_for(
+        tmp_path, result=AssignmentCandidate(task_id=TASK_ID, status=status)
+    )
+    with pytest.raises(
+        CanonicalTaskNotEligible, match="not READY"
+    ):
+        asyncio.run(svc.evaluate(AssignmentEvaluateRequest(
+            task_id=TASK_ID, dry_run=dry_run
+        )))
+    assert upstream.calls == 1
+    assert_no_assignment_effects(svc)
+
+
+@pytest.mark.parametrize("status", ["DONE", "FAILED", "PAUSED"])
+def test_verified_but_not_ready_api_returns_sanitized_409(tmp_path, status):
+    svc, upstream = service_for(
+        tmp_path, result=AssignmentCandidate(task_id=TASK_ID, status=status)
+    )
+    app.state.assignment_service = svc
+    client = TestClient(app, headers={"Authorization": f"Bearer {TEST_TOKEN}"})
+    resp = client.post(
+        "/api/assignments/evaluate",
+        json={"task_id": TASK_ID, "dry_run": False},
+    )
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "detail": "canonical task is not READY; assignment denied"
+    }
+    assert_no_assignment_effects(svc)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_scheduler_second_nonready_task_aborts_entire_batch(
+    tmp_path, dry_run
+):
+    svc, upstream = service_for(tmp_path)
+
+    async def resolve(task_id):
+        if task_id == "synthetic-first":
+            return AssignmentCandidate(task_id=task_id, status="READY")
+        return AssignmentCandidate(task_id=task_id, status="DONE")
+
+    upstream.get_task = resolve
+    req = SchedulerTickRequest(
+        task_ids=["synthetic-first", "synthetic-second"],
+        dry_run=dry_run, limit=2,
+    )
+    with pytest.raises(CanonicalTaskNotEligible, match="not READY"):
+        asyncio.run(svc.scheduler_tick(req))
+    assert_no_assignment_effects(svc)
+
+
+def test_scheduler_nonready_api_returns_409_without_writes(tmp_path):
+    svc, upstream = service_for(
+        tmp_path, result=AssignmentCandidate(task_id=TASK_ID, status="FAILED")
+    )
+    app.state.assignment_service = svc
+    response = TestClient(
+        app, headers={"Authorization": f"Bearer {TEST_TOKEN}"}
+    ).post(
+        "/api/scheduler/tick",
+        json={"task_ids": [TASK_ID], "limit": 1, "dry_run": True},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "canonical task is not READY; assignment denied"
+    }
     assert_no_assignment_effects(svc)
