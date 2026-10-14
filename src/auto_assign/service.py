@@ -58,7 +58,8 @@ class AssignmentService:
         self.last_tick_at: str | None = None
 
     def _control(self) -> dict:
-        return AssignmentControlStore(self.settings.sqlite_path).get()
+        # Reading global assignment authority must not have DDL side effects.
+        return AssignmentControlStore.peek_read_only(self.settings.sqlite_path)
 
     def _assignment_control_blocks_new_work(
         self, *, read_only: bool = False
