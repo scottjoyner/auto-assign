@@ -74,7 +74,7 @@ def make_client(tmp_path):
 def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
     response = client.post(
         "/api/assignments/evaluate",
-        json={"task_id": task_id, "dry_run": True, "candidate_lanes": ["router_model"]},
+        json={"task_id": task_id, "dry_run": False, "candidate_lanes": ["router_model"]},
     )
     assert response.status_code == 200
     return response.json()
