@@ -341,9 +341,37 @@ class AssignmentService:
                 limit=limit, event_type=event_type
             )
         )
+        # Historically "dry_run=true" still wrote assignment cache/outbox
+        # and inbound processing markers. That is NOT a safe preview on a
+        # historical backlog. Strictly return only a read-only eligibility
+        # plan; do not call evaluate(), scheduler_tick(), or mark processed.
+        router_snapshot_event_types = {str(kind) for kind in ROUTER_SNAPSHOT_EVENTS}
+        if dry_run:
+            preview = []
+            for event_row in events:
+                event = event_row["payload"]
+                event_name = event.get("event_type")
+                if event_name == EventType.TASK_CANDIDATE_CREATED:
+                    action = "would_evaluate_assignment"
+                elif event_name in router_snapshot_event_types:
+                    action = "would_trigger_scheduler_tick"
+                else:
+                    action = "would_ignore"
+                preview.append(
+                    {"event_type": event_name, "action": action, "dry_run": True}
+                )
+            return {
+                "processed": 0,
+                "would_process": len(preview),
+                "skipped_already_processed": 0,
+                "actions": preview,
+                "dry_run": True,
+                "read_only_preview": True,
+                "source": "sqlite_inbound_event_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         actions: list[dict] = []
         skipped_already_processed = 0
-        router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
             if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
