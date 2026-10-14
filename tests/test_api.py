@@ -190,7 +190,9 @@ def test_processed_inbound_event_is_not_reprocessed_by_default(tmp_path):
 
     assert first["processed"] == 1
     assert second["processed"] == 0
-    assert second["skipped_already_processed"] == 1
+    # Eligibility is filtered in SQL before limiting; already-processed
+    # receipts are not loaded into this batch or counted as skipped.
+    assert second["skipped_already_processed"] == 0
     assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
 
 
