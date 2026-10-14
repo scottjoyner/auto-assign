@@ -303,7 +303,7 @@ class AssignmentService:
                 "preview": True,
                 "dry_run": True,
                 "reason": "approval_preview_only_no_event_enqueued",
-                "would_emit_event_type": str(EventType.ASSIGNMENT_APPROVED),
+                "would_emit_event_type": EventType.ASSIGNMENT_APPROVED.value,
                 "canonical_source": "neo4j_via_assistx",
                 "cache_role": "read_only_assignment_preview",
             }
@@ -363,7 +363,7 @@ class AssignmentService:
                 "preview": True,
                 "dry_run": True,
                 "reason": "release_preview_only_no_event_enqueued",
-                "would_emit_event_type": str(EventType.ASSIGNMENT_RELEASED),
+                "would_emit_event_type": EventType.ASSIGNMENT_RELEASED.value,
                 "canonical_source": "neo4j_via_assistx",
                 "cache_role": "read_only_assignment_preview",
             }
