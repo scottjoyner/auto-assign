@@ -217,7 +217,8 @@ async def metrics():
 
 @app.get("/api/assignment-control")
 async def read_assignment_control(service: Annotated[AssignmentService, Depends(get_assignment_service)]):
-    return get_assignment_control(service).get()
+    # GET must not create a control table or open a writable connection.
+    return AssignmentControlStore.peek_read_only(service.settings.sqlite_path)
 
 
 @app.post("/api/assignment-control")
