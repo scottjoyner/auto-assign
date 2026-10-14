@@ -90,9 +90,21 @@ class AssistXClient:
             try:
                 response = await self._client.get(f"{self.base_url}{path}", headers=self._default_headers(), auth=self._auth)
                 if response.is_success:
-                    return self._candidate_from_item(response.json())
-            except Exception as exc:
-                logger.debug("get_task %s failed on %s: %s", task_id, path, exc)
+                    payload = response.json()
+                    # A 200 response without an explicit matching canonical
+                    # identity is NOT verification. The generic candidate
+                    # projection can otherwise invent an ID from 'title'.
+                    if not isinstance(payload, dict) or not any(
+                        payload.get(field) == task_id
+                        for field in ("task_id", "id", "uuid")
+                    ):
+                        return None
+                    candidate = self._candidate_from_item(payload)
+                    return candidate if candidate.task_id == task_id else None
+            except Exception:
+                # Do not log requested IDs, endpoint bodies, or exception text
+                # while credentials/graph identity remain under review.
+                logger.debug("canonical task read failed at approved endpoint")
                 continue
         return None
 
