@@ -31,7 +31,11 @@ from .models import (  # noqa: E402
     SchedulerTickRequest,
 )
 from .scorer import AssignmentScorer  # noqa: E402
-from .service import AssignmentService, CanonicalTaskUnverified  # noqa: E402
+from .service import (  # noqa: E402
+    AssignmentService,
+    CanonicalTaskNotEligible,
+    CanonicalTaskUnverified,
+)
 from .settings import Settings, get_settings  # noqa: E402
 
 
@@ -289,6 +293,11 @@ async def evaluate_assignment(
 ):
     try:
         return await service.evaluate(request)
+    except CanonicalTaskNotEligible:
+        raise HTTPException(
+            status_code=409,
+            detail="canonical task is not READY; assignment denied",
+        ) from None
     except CanonicalTaskUnverified:
         raise HTTPException(
             status_code=503,
@@ -303,6 +312,11 @@ async def scheduler_tick(
 ):
     try:
         return await service.scheduler_tick(request)
+    except CanonicalTaskNotEligible:
+        raise HTTPException(
+            status_code=409,
+            detail="canonical task is not READY; assignment denied",
+        ) from None
     except CanonicalTaskUnverified:
         raise HTTPException(
             status_code=503,
