@@ -96,17 +96,29 @@ class AssistXClient:
                     # projection can otherwise invent an ID from 'title'.
                     if not isinstance(payload, dict):
                         return None
-                    identities = [
+                    # AssistX's real GET /api/tasks/{id} contract returns
+                    # {"task": {<Task properties>}, "transcription": ..., "runs": ...}.
+                    # A flat task body may also come from the alternate route.
+                    raw = payload.get("task", payload)
+                    if not isinstance(raw, dict):
+                        return None
+                    nested_ids = [
+                        raw[field]
+                        for field in ("task_id", "id", "uuid")
+                        if raw.get(field) is not None
+                    ]
+                    envelope_ids = [
                         payload[field]
                         for field in ("task_id", "id", "uuid")
                         if payload.get(field) is not None
-                    ]
+                    ] if "task" in payload else []
+                    identities = nested_ids + envelope_ids
                     if not identities or any(
                         not isinstance(identity, str) or identity != task_id
                         for identity in identities
                     ):
                         return None
-                    candidate = self._candidate_from_item(payload)
+                    candidate = self._candidate_from_item(raw)
                     return candidate if candidate.task_id == task_id else None
             except Exception:
                 # Do not log requested IDs, endpoint bodies, or exception text
