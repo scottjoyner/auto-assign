@@ -225,13 +225,32 @@ async def set_assignment_control(
     request: AssignmentControlRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
+    if request.dry_run:
+        # A control preview must not invoke AssignmentControlStore.__init__,
+        # which creates SQLite schema, let alone change global authority.
+        current = AssignmentControlStore.peek_read_only(
+            service.settings.sqlite_path
+        )
+        return {
+            "accepted": False,
+            "applied": False,
+            "preview": True,
+            "dry_run": True,
+            "current_mode": current["mode"],
+            "would_set_mode": request.mode.value,
+            "assignment_allowed": current["assignment_allowed"],
+            "canonical_source": "neo4j_via_assistx",
+            "cache_role": "read_only_control_preview",
+        }
     state, event = get_assignment_control(service).set(request)
     service.cache.enqueue_event(event)
     return {
         **state,
+        "applied": True,
+        "preview": False,
         "event_id": event.event_id,
         "idempotency_key": event.idempotency_key,
-        "dry_run": request.dry_run,
+        "dry_run": False,
         "cache_role": "assignment_control_cache_and_outbox",
         "canonical_source": "neo4j_via_assistx",
     }
@@ -505,6 +524,8 @@ async def approve_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.approve_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=404, detail=result)
     return result
@@ -517,6 +538,8 @@ async def release_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.release_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=404, detail=result)
     return result
