@@ -1,0 +1,43 @@
+name: Router Admin Snapshot Read-Only Contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/auto_assign/clients.py'
+      - 'tests/test_router_admin_snapshot_auth.py'
+      - 'tests/test_clients.py'
+      - 'tests/test_assignment_control_enforcement.py'
+      - '.github/workflows/router-admin-snapshot-readonly.yml'
+  push:
+    branches: ['fix/router-admin-snapshot-failclosed-20261011']
+
+permissions:
+  contents: read
+
+jobs:
+  offline-auth-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install isolated test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Lint exact changed security slice
+        run: ruff check src/auto_assign/clients.py tests/test_router_admin_snapshot_auth.py
+      - name: Compile exact changed security slice
+        run: python -m compileall -q src/auto_assign/clients.py tests/test_router_admin_snapshot_auth.py
+      - name: Test read-only authentication and assignment-control contracts
+        run: |
+          python -m pytest -q --noconftest \
+            tests/test_router_admin_snapshot_auth.py \
+            tests/test_clients.py \
+            tests/test_assignment_control_enforcement.py

@@ -47,8 +47,14 @@ class FakeRouterClient(RouterClient):
         return RouterSnapshot(reachable=True, context_revision="test-rev")
 
 
+SYNTHETIC_TEST_TOKEN = "synthetic-test-auth-not-for-real-services"
+
+
 def make_service(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}",
+        api_token=SYNTHETIC_TEST_TOKEN,
+    )
     return AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
@@ -60,7 +66,7 @@ def make_service(tmp_path):
 
 def make_client(tmp_path):
     app.state.assignment_service = make_service(tmp_path)
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
 
 def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
@@ -184,7 +190,9 @@ def test_processed_inbound_event_is_not_reprocessed_by_default(tmp_path):
 
     assert first["processed"] == 1
     assert second["processed"] == 0
-    assert second["skipped_already_processed"] == 1
+    # Eligibility is filtered in SQL before limiting; already-processed
+    # receipts are not loaded into this batch or counted as skipped.
+    assert second["skipped_already_processed"] == 0
     assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
 
 
@@ -262,7 +270,7 @@ def test_stale_heartbeat_watchdog_reports_cache_visibility(tmp_path):
 def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
     service = make_service(tmp_path)
     app.state.assignment_service = service
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
     payload = create_assignment(client, "ASS-reconcile")
     key = payload["idempotency_key"]
@@ -505,7 +513,7 @@ def test_api_auth_enforced_when_token_set(tmp_path):
         scorer=AssignmentScorer(settings),
     )
     app.state.assignment_service = svc
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": "Bearer " + SYNTHETIC_TEST_TOKEN})
 
     # health stays open
     assert client.get("/health").status_code == 200
