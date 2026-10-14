@@ -301,7 +301,13 @@ async def scheduler_tick(
     request: SchedulerTickRequest,
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
-    return await service.scheduler_tick(request)
+    try:
+        return await service.scheduler_tick(request)
+    except CanonicalTaskUnverified:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical task identity unavailable; assignment denied",
+        ) from None
 
 
 @app.get("/api/scheduler/runs")
