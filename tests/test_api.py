@@ -376,7 +376,8 @@ def test_approve_missing_assignment_returns_404(tmp_path):
 def test_scheduler_tick_records_local_run_summary(tmp_path):
     client = make_client(tmp_path)
 
-    response = client.post("/api/scheduler/tick", json={"dry_run": True, "limit": 2})
+    # Only explicitly non-dry-run synthetic execution records a run.
+    response = client.post("/api/scheduler/tick", json={"dry_run": False, "limit": 2})
     runs = client.get("/api/scheduler/runs").json()
 
     assert response.status_code == 200
