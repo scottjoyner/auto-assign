@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -921,7 +922,16 @@ class AssignmentService:
                     heartbeat.assignment_id, heartbeat.worker_id, candidate_expiry
                 )
                 if lease_renewed:
-                    renewed_lease_expires = candidate_expiry
+                    # SQLite preserves the later of the old and requested
+                    # lease deadlines. Report its post-CAS value rather than
+                    # incorrectly claiming a shortened expiry.
+                    stored = self.cache.get_assignment(heartbeat.assignment_id)
+                    raw_expiry = stored.get("lease_expires_at") if stored else None
+                    renewed_lease_expires = (
+                        datetime.fromisoformat(raw_expiry).timestamp()
+                        if isinstance(raw_expiry, str)
+                        else candidate_expiry
+                    )
 
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_HEARTBEAT,
