@@ -30,7 +30,7 @@ class FakeAssistXClient(AssistXClient):
         return {"reachable": True, "brain": "neo4j_via_assistx"}
 
     async def get_task(self, task_id: str):
-        return None
+        return AssignmentCandidate(task_id=task_id)
 
     async def get_backlog_candidates(self, limit: int = 25):
         return [AssignmentCandidate(task_id=f"ASS-{i}") for i in range(min(limit, 3))]
