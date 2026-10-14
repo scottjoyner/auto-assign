@@ -7,7 +7,6 @@ from __future__ import annotations
 import pytest
 
 from auto_assign.models import HeartbeatRequest
-
 from test_api import create_assignment, make_client
 
 
