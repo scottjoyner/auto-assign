@@ -469,9 +469,11 @@ class CacheStore:
             updated = conn.execute(
                 """
                 UPDATE assignments
-                SET updated_at=?, lease_expires_at=?,
+                SET updated_at=?,
+                    lease_expires_at=MAX(lease_expires_at, ?),
                     payload_json=json_set(
-                        payload_json, '$.lease_expires_at', ?
+                        payload_json, '$.lease_expires_at',
+                        MAX(lease_expires_at, ?)
                     )
                 WHERE assignment_id=?
                   AND status IN ('running', 'in_progress')
