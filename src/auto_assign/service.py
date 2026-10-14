@@ -86,8 +86,11 @@ class AssignmentService:
             reason_code=reason_code,
             reason=reason,
         )
-        self.cache.upsert_assignment(decision)
-        self.cache.enqueue_event(self._decision_event(decision, dry_run=dry_run))
+        # A blocked preview remains ephemeral. Record a blocked assignment
+        # only for an explicitly non-dry-run operation.
+        if not dry_run:
+            self.cache.upsert_assignment(decision)
+            self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
         return decision
 
     def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
@@ -162,18 +165,27 @@ class AssignmentService:
             )
         candidate.allowed_lanes = request.candidate_lanes
 
-        blocked_control = self._assignment_control_blocks_new_work()
+        blocked_control = self._assignment_control_blocks_new_work(
+            read_only=request.dry_run
+        )
         if blocked_control:
-            return self._control_blocked_decision(candidate, blocked_control, dry_run=request.dry_run)
+            return self._control_blocked_decision(
+                candidate, blocked_control, dry_run=request.dry_run
+            )
 
         router_snapshot = await self.router.snapshot()
         status = await self.assistx.event_status(
             self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
         )
         canonical_status = status.get("canonical_status") if status.get("known") else None
-        decision = self.scorer.score(candidate, router_snapshot, request.candidate_lanes, canonical_status)
-        self.cache.upsert_assignment(decision)
-        self.cache.enqueue_event(self._decision_event(decision, dry_run=request.dry_run))
+        decision = self.scorer.score(
+            candidate, router_snapshot, request.candidate_lanes, canonical_status
+        )
+        # Direct assignment dry-run is only an ephemeral recommendation:
+        # no cache assignment, queued event, or durable approval is created.
+        if not request.dry_run:
+            self.cache.upsert_assignment(decision)
+            self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
         return decision
 
     async def scheduler_tick(self, request: SchedulerTickRequest) -> SchedulerTickResponse:
