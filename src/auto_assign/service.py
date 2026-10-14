@@ -938,13 +938,11 @@ class AssignmentService:
         if heartbeat.assignment_id:
             assignment = self.cache.get_assignment(heartbeat.assignment_id)
             if assignment and assignment.get("worker_id") == heartbeat.worker_id:
-                renewed_lease_expires = utc_now().timestamp() + self.settings.default_lease_seconds
-                self.cache.update_assignment_status(
-                    heartbeat.assignment_id,
-                    status=assignment.get("status", "running"),
-                    lease_expires_at=renewed_lease_expires,
+                proposed = utc_now().timestamp() + self.settings.default_lease_seconds
+                renewed_lease_expires = self.cache.renew_assignment_lease_if_owned(
+                    heartbeat.assignment_id, heartbeat.worker_id, proposed
                 )
-                lease_renewed = True
+                lease_renewed = renewed_lease_expires is not None
 
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_HEARTBEAT,
