@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from auto_assign.models import HeartbeatRequest
+
 from test_api import create_assignment, make_client
 
 
@@ -140,4 +142,90 @@ def test_failed_cas_claim_does_not_emit_claim_event(tmp_path):
     before = witness(client)
     resp = claim(client, a["assignment_id"], a["task_id"], "worker-a")
     assert resp.status_code == 400
+    assert witness(client) == before
+
+
+@pytest.mark.parametrize("terminal", ["done", "failed", "released"])
+def test_terminal_assignment_cannot_renew_worker_lease(tmp_path, terminal):
+    client = make_client(tmp_path)
+    a = create_assignment(client, f"synthetic-{terminal}")
+    assert claim(client, a["assignment_id"], a["task_id"]).status_code == 200
+    svc = client.app.state.assignment_service
+    svc.cache.update_assignment_status(a["assignment_id"], status=terminal)
+    with svc.cache.connect() as db:
+        previous = db.execute(
+            "SELECT lease_expires_at FROM assignments WHERE assignment_id=?",
+            (a["assignment_id"],)
+        ).fetchone()[0]
+    event = svc.record_heartbeat_with_lease_renewal(
+        HeartbeatRequest(node_id="synthetic-node", worker_id="worker-a",
+                         assignment_id=a["assignment_id"])
+    )
+    assert event.payload["lease_renewed"] is False
+    with svc.cache.connect() as db:
+        assert db.execute(
+            "SELECT lease_expires_at FROM assignments WHERE assignment_id=?",
+            (a["assignment_id"],)
+        ).fetchone()[0] == previous
+
+
+@pytest.mark.parametrize("worker", ["worker-b", "worker-a"])
+def test_expired_or_nonowner_heartbeat_cannot_recreate_live_lease(
+    tmp_path, worker
+):
+    client = make_client(tmp_path)
+    a = create_assignment(client, "synthetic-lease-renew")
+    assert claim(client, a["assignment_id"], a["task_id"]).status_code == 200
+    svc = client.app.state.assignment_service
+    with svc.cache.connect() as db:
+        db.execute(
+            "UPDATE assignments SET lease_expires_at='2020-01-01T00:00:00+00:00' WHERE assignment_id=?",
+            (a["assignment_id"],)
+        )
+    event = svc.record_heartbeat_with_lease_renewal(
+        HeartbeatRequest(node_id="synthetic-node", worker_id=worker,
+                         assignment_id=a["assignment_id"])
+    )
+    assert event.payload["lease_renewed"] is False
+    with svc.cache.connect() as db:
+        assert db.execute(
+            "SELECT lease_expires_at FROM assignments WHERE assignment_id=?",
+            (a["assignment_id"],)
+        ).fetchone()[0] == "2020-01-01T00:00:00+00:00"
+
+
+def test_valid_owner_heartbeat_renews_active_lease_once(tmp_path):
+    client = make_client(tmp_path)
+    a = create_assignment(client, "synthetic-active-heartbeat")
+    assert claim(client, a["assignment_id"], a["task_id"]).status_code == 200
+    svc = client.app.state.assignment_service
+    event = svc.record_heartbeat_with_lease_renewal(
+        HeartbeatRequest(node_id="synthetic-node", worker_id="worker-a",
+                         assignment_id=a["assignment_id"])
+    )
+    assert event.payload["lease_renewed"] is True
+
+
+@pytest.mark.parametrize("request_body", [
+    {"task_id": "", "worker_id": "worker-a", "correlation_id": "synthetic"},
+    {"task_id": "valid", "worker_id": "", "correlation_id": "synthetic"},
+    {"task_id": "valid", "worker_id": "worker-a", "correlation_id": ""},
+])
+def test_claim_empty_identity_is_422_without_writes(tmp_path, request_body):
+    client = make_client(tmp_path)
+    a = create_assignment(client, "synthetic-invalid-claim")
+    before = witness(client)
+    r = client.post(f"/api/assignments/{a['assignment_id']}/claim", json=request_body)
+    assert r.status_code == 422
+    assert witness(client) == before
+
+
+@pytest.mark.parametrize("invalid_status", ["", "done", "garbage", "SUCCESS"])
+def test_invalid_completion_status_rejected_at_schema(tmp_path, invalid_status):
+    client = make_client(tmp_path)
+    a = create_assignment(client, "synthetic-invalid-completion")
+    assert claim(client, a["assignment_id"], a["task_id"]).status_code == 200
+    before = witness(client)
+    result = complete(client, a["assignment_id"], a["task_id"], status=invalid_status)
+    assert result.status_code == 422
     assert witness(client) == before
