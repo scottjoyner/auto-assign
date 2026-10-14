@@ -118,6 +118,11 @@ class AssistXClient:
                         for identity in identities
                     ):
                         return None
+                    # Missing status may otherwise silently inherit the
+                    # AssignmentCandidate default 'ready'. Require the graph
+                    # to supply an explicit lifecycle state before scoring.
+                    if not isinstance(raw.get("status"), str) or not raw["status"].strip():
+                        return None
                     candidate = self._candidate_from_item(raw)
                     return candidate if candidate.task_id == task_id else None
             except Exception:
