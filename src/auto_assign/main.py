@@ -553,6 +553,8 @@ async def claim_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.claim_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=400, detail=result)
     return result
@@ -565,6 +567,8 @@ async def complete_assignment(
     service: Annotated[AssignmentService, Depends(get_assignment_service)],
 ):
     result = await service.complete_assignment(assignment_id, request)
+    if result.get("preview") is True:
+        return result
     if not result.get("accepted"):
         raise HTTPException(status_code=400, detail=result)
     return result
