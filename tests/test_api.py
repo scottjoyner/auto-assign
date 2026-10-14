@@ -106,7 +106,7 @@ def test_assignment_control_defaults_and_updates(tmp_path):
             "mode": "draining",
             "reason": "operator drain before interactive work",
             "updated_by": "operator",
-            "dry_run": True,
+            "dry_run": False,
         },
     ).json()
 
@@ -451,7 +451,7 @@ def test_assignment_summary_respects_paused_control(tmp_path):
     client = make_client(tmp_path)
     client.post(
         "/api/assignment-control",
-        json={"mode": "paused", "reason": "pause for interactive work", "updated_by": "operator"},
+        json={"mode": "paused", "reason": "pause for interactive work", "updated_by": "operator", "dry_run": False},
     )
 
     summary = client.get("/api/assignments/summary").json()
@@ -465,7 +465,7 @@ def test_assignment_summary_respects_draining_control(tmp_path):
     client = make_client(tmp_path)
     client.post(
         "/api/assignment-control",
-        json={"mode": "draining", "reason": "finish safe checkpoints", "updated_by": "operator"},
+        json={"mode": "draining", "reason": "finish safe checkpoints", "updated_by": "operator", "dry_run": False},
     )
 
     summary = client.get("/api/assignments/summary").json()
