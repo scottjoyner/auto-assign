@@ -409,6 +409,58 @@ class CacheStore:
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
 
+    def renew_assignment_lease_if_owned(
+        self, assignment_id: str, worker_id: str, new_expiry: float
+    ) -> float | None:
+        """CAS-like monotonic local lease renewal. Not graph authority."""
+        now = utc_now()
+        candidate = datetime.fromtimestamp(new_expiry, tz=UTC)
+        with closing(sqlite3.connect(str(self.path), timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, lease_expires_at, payload_json "
+                    "FROM assignments WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchone()
+                if row is None or row["status"] not in ("running", "in_progress"):
+                    conn.rollback()
+                    return None
+                prior = json.loads(row["payload_json"])
+                if prior.get("worker_id") != worker_id:
+                    conn.rollback()
+                    return None
+                try:
+                    current = datetime.fromisoformat(row["lease_expires_at"])
+                    if current.tzinfo is None or current <= now:
+                        raise ValueError("inactive lease")
+                except (TypeError, ValueError):
+                    conn.rollback()
+                    return None
+                updated_expiry = max(current, candidate)
+                prior["lease_expires_at"] = updated_expiry.isoformat()
+                changed = conn.execute(
+                    "UPDATE assignments SET lease_expires_at=?, "
+                    "payload_json=?, updated_at=? WHERE assignment_id=? "
+                    "AND status=? AND lease_expires_at=?",
+                    (
+                        updated_expiry.isoformat(),
+                        json.dumps(prior, sort_keys=True),
+                        now.isoformat(), assignment_id, row["status"],
+                        row["lease_expires_at"],
+                    ),
+                )
+                if changed.rowcount != 1:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return updated_expiry.timestamp()
+            except Exception:
+                conn.rollback()
+                raise
+
     def update_assignment_status(
         self,
         assignment_id: str,
