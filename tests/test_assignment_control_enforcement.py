@@ -53,7 +53,7 @@ def make_client(tmp_path):
 def set_control(client: TestClient, mode: str) -> None:
     response = client.post(
         "/api/assignment-control",
-        json={"mode": mode, "reason": f"test {mode}", "updated_by": "test"},
+        json={"mode": mode, "reason": f"test {mode}", "updated_by": "test", "dry_run": False},
     )
     assert response.status_code == 200
 
