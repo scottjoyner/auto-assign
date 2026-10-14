@@ -459,6 +459,29 @@ class CacheStore:
             )
             return updated.rowcount == 1
 
+    def renew_assignment_lease_if_owned(
+        self, assignment_id: str, worker_id: str, new_expiry: float,
+    ) -> bool:
+        """Fail closed for stale, terminal, or wrong-owner heartbeats."""
+        now = utc_now().isoformat()
+        expires = datetime.fromtimestamp(new_expiry, tz=UTC).isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET updated_at=?, lease_expires_at=?,
+                    payload_json=json_set(
+                        payload_json, '$.lease_expires_at', ?
+                    )
+                WHERE assignment_id=?
+                  AND status IN ('running', 'in_progress')
+                  AND json_extract(payload_json, '$.worker_id')=?
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at>?
+                """,
+                (now, expires, expires, assignment_id, worker_id, now),
+            )
+            return updated.rowcount == 1
+
     def update_assignment_status(
         self,
         assignment_id: str,
