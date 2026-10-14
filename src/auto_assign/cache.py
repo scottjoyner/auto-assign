@@ -264,6 +264,38 @@ class CacheStore:
             rows = conn.execute(sql, params).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def list_unprocessed_inbound_events(
+        self, limit: int = 50, event_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Oldest eligible inbound receipts, not the newest cached N rows.
+
+        Filtering after a newest-first LIMIT can permanently starve old
+        unprocessed receipts behind already processed ones. This method is a
+        read-only SELECT; callers decide whether and how to process events.
+        """
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("unprocessed receipt page limit must be 1..500")
+        sql = """
+            SELECT e.event_id, e.event_type, e.source_service,
+                   e.idempotency_key, e.subject, e.payload_json,
+                   e.received_at, e.created_at, e.updated_at
+            FROM inbound_events AS e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM inbound_event_processing AS p
+                WHERE p.idempotency_key = e.idempotency_key
+            )
+        """
+        params: tuple[Any, ...]
+        if event_type is not None:
+            sql += " AND e.event_type = ?"
+            params = (event_type, limit)
+        else:
+            params = (limit,)
+        sql += " ORDER BY e.received_at ASC, e.idempotency_key ASC LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
     def inbound_summary(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
