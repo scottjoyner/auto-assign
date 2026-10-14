@@ -279,7 +279,7 @@ def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
     key = payload["idempotency_key"]
     service.assistx.applied_keys.add(key)
 
-    reconcile = client.post("/api/outbox/reconcile").json()
+    reconcile = client.post("/api/outbox/reconcile?dry_run=false").json()
 
     assert reconcile["reconciled_delivered"] == 1
     assert reconcile["summary"] == {"delivered": 1}
