@@ -107,7 +107,9 @@ def test_draining_control_blocks_scheduler_tick_without_evaluating_candidates(tm
 
     runs = client.get("/api/scheduler/runs").json()["runs"]
     assert runs == []  # A blocked dry-run cannot write a run record.
-    assert client.get("/api/outbox/summary").json()["summary"] == {}
+    # The control change created a pending outbox event before the preview.
+    # The scheduler preview leaves this existing event untouched.
+    assert client.get("/api/outbox/summary").json()["summary"] == {"pending": 1}
 
 
 def test_enabled_control_allows_scheduler_tick(tmp_path):
