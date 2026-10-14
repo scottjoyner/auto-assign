@@ -175,16 +175,19 @@ class AssignmentService:
         blocked_control = self._assignment_control_blocks_new_work()
         if blocked_control:
             scheduler_run_id = f"tick_{uuid4().hex[:12]}"
-            self.last_tick_at = utc_now().isoformat()
-            self.cache.record_scheduler_run(
-                scheduler_run_id=scheduler_run_id,
-                trigger_reason=f"{request.reason}:blocked_by_assignment_control:{blocked_control.get('mode')}",
-                dry_run=request.dry_run,
-                evaluated_count=0,
-                recommended_count=0,
-                skipped_count=0,
-                error_summary=f"assignment control mode {blocked_control.get('mode')} blocks scheduler ticks",
-            )
+            # Preview is read-only even when assignment control is paused.
+            # No scheduler cache row or in-memory last_tick timestamp.
+            if not request.dry_run:
+                self.last_tick_at = utc_now().isoformat()
+                self.cache.record_scheduler_run(
+                    scheduler_run_id=scheduler_run_id,
+                    trigger_reason=f"{request.reason}:blocked_by_assignment_control:{blocked_control.get('mode')}",
+                    dry_run=False,
+                    evaluated_count=0,
+                    recommended_count=0,
+                    skipped_count=0,
+                    error_summary=f"assignment control mode {blocked_control.get('mode')} blocks scheduler ticks",
+                )
             return SchedulerTickResponse(
                 scheduler_run_id=scheduler_run_id,
                 dry_run=request.dry_run,
@@ -233,12 +236,19 @@ class AssignmentService:
             canonical_status = status.get("canonical_status") if status.get("known") else None
             decision = self.scorer.score(candidate, router_snapshot, canonical_status=canonical_status)
             decisions.append(decision)
-            self.cache.upsert_assignment(decision)
-            self.cache.enqueue_event(self._decision_event(decision, dry_run=request.dry_run))
+            # A preview returns an ephemeral scored recommendation. It MUST
+            # NOT create assignments, enqueue decisions, or claim authority.
+            if not request.dry_run:
+                self.cache.upsert_assignment(decision)
+                self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
 
         scheduler_run_id = f"tick_{uuid4().hex[:12]}"
-        self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
-        expired = self.expire_stale_leases()
+        # Stale lease expiry and run recording are also state mutations,
+        # even when all proposed decisions were blocked or the page is empty.
+        expired_count = 0
+        if not request.dry_run:
+            self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
+            expired_count = self.expire_stale_leases().get("expired_count", 0)
         response = SchedulerTickResponse(
             scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
@@ -246,17 +256,18 @@ class AssignmentService:
             recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
             approval_required=sum(1 for d in decisions if d.status == AssignmentStatus.APPROVAL_REQUIRED),
             skipped=sum(1 for d in decisions if d.status == AssignmentStatus.BLOCKED),
-            released_expired=expired.get("expired_count", 0),
+            released_expired=expired_count,
             decisions=decisions,
         )
-        self.cache.record_scheduler_run(
-            scheduler_run_id=scheduler_run_id,
-            trigger_reason=request.reason,
-            dry_run=request.dry_run,
-            evaluated_count=response.evaluated,
-            recommended_count=response.recommended,
-            skipped_count=response.skipped,
-        )
+        if not request.dry_run:
+            self.cache.record_scheduler_run(
+                scheduler_run_id=scheduler_run_id,
+                trigger_reason=request.reason,
+                dry_run=False,
+                evaluated_count=response.evaluated,
+                recommended_count=response.recommended,
+                skipped_count=response.skipped,
+            )
         return response
 
     async def approve_assignment(self, assignment_id: str, request: AssignmentApprovalRequest) -> dict:
