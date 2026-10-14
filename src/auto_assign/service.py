@@ -33,6 +33,10 @@ from .scorer import AssignmentScorer  # noqa: E402
 from .settings import Settings  # noqa: E402
 
 
+class CanonicalTaskUnverified(RuntimeError):
+    """Canonical task identity could not be verified; no assignment effects."""
+
+
 class AssignmentService:
     def __init__(
         self,
@@ -129,11 +133,21 @@ class AssignmentService:
         return [{**dict(row), "action": json.loads(row["action_json"])} for row in rows]
 
     async def evaluate(self, request: AssignmentEvaluateRequest) -> AssignmentDecision:
-        candidate = await self.assistx.get_task(request.task_id)
-        if candidate is None:
-            candidate = AssignmentCandidate(task_id=request.task_id, allowed_lanes=request.candidate_lanes)
-        else:
-            candidate.allowed_lanes = request.candidate_lanes
+        try:
+            candidate = await self.assistx.get_task(request.task_id)
+        except Exception:
+            # An unavailable/unauthorized canonical source cannot become a
+            # synthetic, apparently valid task. Do not reveal task IDs or
+            # upstream credentials in outward-facing error messages.
+            logger.warning("canonical task lookup failed; assignment denied")
+            raise CanonicalTaskUnverified(
+                "canonical task identity unavailable; assignment denied"
+            ) from None
+        if candidate is None or candidate.task_id != request.task_id:
+            raise CanonicalTaskUnverified(
+                "canonical task identity unavailable; assignment denied"
+            )
+        candidate.allowed_lanes = request.candidate_lanes
 
         blocked_control = self._assignment_control_blocks_new_work()
         if blocked_control:
