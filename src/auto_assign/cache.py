@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +264,38 @@ class CacheStore:
             rows = conn.execute(sql, params).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def list_unprocessed_inbound_events(
+        self, limit: int = 50, event_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Oldest eligible inbound receipts, not the newest cached N rows.
+
+        Filtering after a newest-first LIMIT can permanently starve old
+        unprocessed receipts behind already processed ones. This method is a
+        read-only SELECT; callers decide whether and how to process events.
+        """
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("unprocessed receipt page limit must be 1..500")
+        sql = """
+            SELECT e.event_id, e.event_type, e.source_service,
+                   e.idempotency_key, e.subject, e.payload_json,
+                   e.received_at, e.created_at, e.updated_at
+            FROM inbound_events AS e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM inbound_event_processing AS p
+                WHERE p.idempotency_key = e.idempotency_key
+            )
+        """
+        params: tuple[Any, ...]
+        if event_type is not None:
+            sql += " AND e.event_type = ?"
+            params = (event_type, limit)
+        else:
+            params = (limit,)
+        sql += " ORDER BY e.received_at ASC, e.idempotency_key ASC LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
     def inbound_summary(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -375,6 +407,83 @@ class CacheStore:
             ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
 
+    def claim_assignment_if_unowned(
+        self, assignment_id: str, task_id: str, worker_id: str,
+        node_id: str | None, lease_expires_at: float,
+    ) -> bool:
+        """Atomic cache-level compare-and-set. NOT canonical graph admission."""
+        now = utc_now().isoformat()
+        lease_iso = datetime.fromtimestamp(lease_expires_at, tz=UTC).isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET status='running', updated_at=?, lease_expires_at=?,
+                    payload_json=json_set(
+                        payload_json, '$.status', 'running',
+                        '$.worker_id', ?, '$.node_id', ?,
+                        '$.lease_expires_at', ?
+                    )
+                WHERE assignment_id=? AND task_id=?
+                  AND status IN ('recommended', 'reserved')
+                  AND COALESCE(json_extract(payload_json, '$.worker_id'), '')=''
+                """,
+                (now, lease_iso, worker_id, node_id, lease_iso,
+                 assignment_id, task_id),
+            )
+            return updated.rowcount == 1
+
+    def complete_assignment_if_owned(
+        self, assignment_id: str, task_id: str, worker_id: str,
+        status: str,
+    ) -> bool:
+        """Atomic owner/lease/state CAS, not distributed fencing authority."""
+        if status not in ("done", "failed"):
+            return False
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET status=?, updated_at=?, lease_expires_at=NULL,
+                    payload_json=json_set(
+                        payload_json, '$.status', ?,
+                        '$.lease_expires_at', NULL
+                    )
+                WHERE assignment_id=? AND task_id=?
+                  AND status IN ('running', 'in_progress')
+                  AND json_extract(payload_json, '$.worker_id')=?
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at>?
+                """,
+                (status, now, status, assignment_id, task_id, worker_id, now),
+            )
+            return updated.rowcount == 1
+
+    def renew_assignment_lease_if_owned(
+        self, assignment_id: str, worker_id: str, new_expiry: float,
+    ) -> bool:
+        """Fail closed for stale, terminal, or wrong-owner heartbeats."""
+        now = utc_now().isoformat()
+        expires = datetime.fromtimestamp(new_expiry, tz=UTC).isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE assignments
+                SET updated_at=?,
+                    lease_expires_at=MAX(lease_expires_at, ?),
+                    payload_json=json_set(
+                        payload_json, '$.lease_expires_at',
+                        MAX(lease_expires_at, ?)
+                    )
+                WHERE assignment_id=?
+                  AND status IN ('running', 'in_progress')
+                  AND json_extract(payload_json, '$.worker_id')=?
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at>?
+                """,
+                (now, expires, expires, assignment_id, worker_id, now),
+            )
+            return updated.rowcount == 1
+
     def update_assignment_status(
         self,
         assignment_id: str,
@@ -393,8 +502,8 @@ class CacheStore:
         if lease_expires_at is not None:
             updates.append("lease_expires_at=?")
             if isinstance(lease_expires_at, (int, float)):
-                from datetime import datetime, timezone
-                lease_value = datetime.fromtimestamp(lease_expires_at, tz=timezone.utc).isoformat()
+                from datetime import datetime
+                lease_value = datetime.fromtimestamp(lease_expires_at, tz=UTC).isoformat()
             else:
                 lease_value = lease_expires_at
             params.append(lease_value)
