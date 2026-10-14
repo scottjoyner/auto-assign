@@ -4,8 +4,8 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import quote
 from typing import Any
+from urllib.parse import quote
 
 from .models import AssignmentControlMode, AssignmentControlRequest, EventEnvelope, utc_now
 
