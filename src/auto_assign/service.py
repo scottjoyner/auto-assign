@@ -533,6 +533,23 @@ class AssignmentService:
 
     async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
         events = self.cache.pending_events(limit=limit)
+        # A preview must not mutate delivery state on a positive remote ACK.
+        # It must also avoid contacting AssistX or returning raw event payloads
+        # (which may contain private task content) merely to list pending work.
+        if dry_run:
+            return {
+                "dry_run": True,
+                "considered": len(events),
+                "delivered": 0,
+                "failed": 0,
+                "dry_run_events": [
+                    {"event_type": str(event.event_type), "action": "would_check_and_dispatch"}
+                    for event in events
+                ],
+                "read_only_preview": True,
+                "summary": self.cache.outbox_summary(),
+                "canonical_source": "neo4j_via_assistx",
+            }
         delivered = 0
         failed = 0
         dry_run_events = []
@@ -541,9 +558,6 @@ class AssignmentService:
             if status.get("known") and status.get("applied", True):
                 self.cache.mark_event_delivered(event.idempotency_key)
                 delivered += 1
-                continue
-            if dry_run:
-                dry_run_events.append(event.model_dump(mode="json"))
                 continue
             try:
                 result = await self.assistx.post_event(event, dry_run=False)
