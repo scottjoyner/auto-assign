@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-from .cache import CacheStore
-from .clients import AssistXClient, RouterClient
-from .control import AssignmentControlStore
-from .events import EventType, ROUTER_SNAPSHOT_EVENTS
-from .models import (
+from .cache import CacheStore  # noqa: E402
+from .clients import AssistXClient, RouterClient  # noqa: E402
+from .control import AssignmentControlStore  # noqa: E402
+from .events import ROUTER_SNAPSHOT_EVENTS, EventType  # noqa: E402
+from .models import (  # noqa: E402
     AssignmentApprovalRequest,
     AssignmentCandidate,
     AssignmentClaimRequest,
@@ -22,15 +23,22 @@ from .models import (
     AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
-    Lane,
     RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,
     correlation_for_task,
     utc_now,
 )
-from .scorer import AssignmentScorer
-from .settings import Settings
+from .scorer import AssignmentScorer  # noqa: E402
+from .settings import Settings  # noqa: E402
+
+
+class CanonicalTaskUnverified(RuntimeError):
+    """Canonical task identity could not be verified; no assignment effects."""
+
+
+class CanonicalTaskNotEligible(RuntimeError):
+    """Verified canonical task is not READY and cannot be assigned."""
 
 
 class AssignmentService:
@@ -50,10 +58,16 @@ class AssignmentService:
         self.last_tick_at: str | None = None
 
     def _control(self) -> dict:
-        return AssignmentControlStore(self.settings.sqlite_path).get()
+        # Reading global assignment authority must not have DDL side effects.
+        return AssignmentControlStore.peek_read_only(self.settings.sqlite_path)
 
-    def _assignment_control_blocks_new_work(self) -> dict | None:
-        control = self._control()
+    def _assignment_control_blocks_new_work(
+        self, *, read_only: bool = False
+    ) -> dict | None:
+        control = (
+            AssignmentControlStore.peek_read_only(self.settings.sqlite_path)
+            if read_only else self._control()
+        )
         if control.get("new_assignments_allowed"):
             return None
         return control
@@ -73,8 +87,11 @@ class AssignmentService:
             reason_code=reason_code,
             reason=reason,
         )
-        self.cache.upsert_assignment(decision)
-        self.cache.enqueue_event(self._decision_event(decision, dry_run=dry_run))
+        # A blocked preview remains ephemeral. Record a blocked assignment
+        # only for an explicitly non-dry-run operation.
+        if not dry_run:
+            self.cache.upsert_assignment(decision)
+            self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
         return decision
 
     def _inbound_event_was_processed(self, idempotency_key: str) -> bool:
@@ -129,40 +146,68 @@ class AssignmentService:
         return [{**dict(row), "action": json.loads(row["action_json"])} for row in rows]
 
     async def evaluate(self, request: AssignmentEvaluateRequest) -> AssignmentDecision:
-        candidate = await self.assistx.get_task(request.task_id)
-        if candidate is None:
-            candidate = AssignmentCandidate(task_id=request.task_id, allowed_lanes=request.candidate_lanes)
-        else:
-            candidate.allowed_lanes = request.candidate_lanes
+        try:
+            candidate = await self.assistx.get_task(request.task_id)
+        except Exception:
+            # An unavailable/unauthorized canonical source cannot become a
+            # synthetic, apparently valid task. Do not reveal task IDs or
+            # upstream credentials in outward-facing error messages.
+            logger.warning("canonical task lookup failed; assignment denied")
+            raise CanonicalTaskUnverified(
+                "canonical task identity unavailable; assignment denied"
+            ) from None
+        if candidate is None or candidate.task_id != request.task_id:
+            raise CanonicalTaskUnverified(
+                "canonical task identity unavailable; assignment denied"
+            )
+        if candidate.status.strip().lower() != "ready":
+            raise CanonicalTaskNotEligible(
+                "canonical task is not READY; assignment denied"
+            )
+        candidate.allowed_lanes = request.candidate_lanes
 
-        blocked_control = self._assignment_control_blocks_new_work()
+        blocked_control = self._assignment_control_blocks_new_work(
+            read_only=request.dry_run
+        )
         if blocked_control:
-            return self._control_blocked_decision(candidate, blocked_control, dry_run=request.dry_run)
+            return self._control_blocked_decision(
+                candidate, blocked_control, dry_run=request.dry_run
+            )
 
         router_snapshot = await self.router.snapshot()
         status = await self.assistx.event_status(
             self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
         )
         canonical_status = status.get("canonical_status") if status.get("known") else None
-        decision = self.scorer.score(candidate, router_snapshot, request.candidate_lanes, canonical_status)
-        self.cache.upsert_assignment(decision)
-        self.cache.enqueue_event(self._decision_event(decision, dry_run=request.dry_run))
+        decision = self.scorer.score(
+            candidate, router_snapshot, request.candidate_lanes, canonical_status
+        )
+        # Direct assignment dry-run is only an ephemeral recommendation:
+        # no cache assignment, queued event, or durable approval is created.
+        if not request.dry_run:
+            self.cache.upsert_assignment(decision)
+            self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
         return decision
 
     async def scheduler_tick(self, request: SchedulerTickRequest) -> SchedulerTickResponse:
-        blocked_control = self._assignment_control_blocks_new_work()
+        blocked_control = self._assignment_control_blocks_new_work(
+            read_only=request.dry_run
+        )
         if blocked_control:
             scheduler_run_id = f"tick_{uuid4().hex[:12]}"
-            self.last_tick_at = utc_now().isoformat()
-            self.cache.record_scheduler_run(
-                scheduler_run_id=scheduler_run_id,
-                trigger_reason=f"{request.reason}:blocked_by_assignment_control:{blocked_control.get('mode')}",
-                dry_run=request.dry_run,
-                evaluated_count=0,
-                recommended_count=0,
-                skipped_count=0,
-                error_summary=f"assignment control mode {blocked_control.get('mode')} blocks scheduler ticks",
-            )
+            # Preview is read-only even when assignment control is paused.
+            # No scheduler cache row or in-memory last_tick timestamp.
+            if not request.dry_run:
+                self.last_tick_at = utc_now().isoformat()
+                self.cache.record_scheduler_run(
+                    scheduler_run_id=scheduler_run_id,
+                    trigger_reason=f"{request.reason}:blocked_by_assignment_control:{blocked_control.get('mode')}",
+                    dry_run=False,
+                    evaluated_count=0,
+                    recommended_count=0,
+                    skipped_count=0,
+                    error_summary=f"assignment control mode {blocked_control.get('mode')} blocks scheduler ticks",
+                )
             return SchedulerTickResponse(
                 scheduler_run_id=scheduler_run_id,
                 dry_run=request.dry_run,
@@ -180,39 +225,69 @@ class AssignmentService:
         else:
             candidates = await self.assistx.get_backlog_candidates(limit=request.limit)
 
+        # Validate the ENTIRE batch against AssistX before any scoring,
+        # outbox writes, lease expiry, or scheduler-run recording. A stale
+        # backlog list or manually supplied task ID is not canonical proof.
+        verified_candidates: list[AssignmentCandidate] = []
+        for listed in candidates[: request.limit]:
+            try:
+                canonical = await self.assistx.get_task(listed.task_id)
+            except Exception:
+                logger.warning("scheduler canonical task lookup failed; tick denied")
+                raise CanonicalTaskUnverified(
+                    "canonical task identity unavailable; assignment denied"
+                ) from None
+            if canonical is None or canonical.task_id != listed.task_id:
+                raise CanonicalTaskUnverified(
+                    "canonical task identity unavailable; assignment denied"
+                )
+            if canonical.status.strip().lower() != "ready":
+                raise CanonicalTaskNotEligible(
+                    "canonical task is not READY; assignment denied"
+                )
+            verified_candidates.append(canonical)
+
         router_snapshot = await self.router.snapshot()
         decisions: list[AssignmentDecision] = []
-        for candidate in candidates[: request.limit]:
+        for candidate in verified_candidates:
             status = await self.assistx.event_status(
                 self.scorer.decision_idempotency_key(candidate.task_id, candidate.status, None)
             )
             canonical_status = status.get("canonical_status") if status.get("known") else None
             decision = self.scorer.score(candidate, router_snapshot, canonical_status=canonical_status)
             decisions.append(decision)
-            self.cache.upsert_assignment(decision)
-            self.cache.enqueue_event(self._decision_event(decision, dry_run=request.dry_run))
+            # A preview returns an ephemeral scored recommendation. It MUST
+            # NOT create assignments, enqueue decisions, or claim authority.
+            if not request.dry_run:
+                self.cache.upsert_assignment(decision)
+                self.cache.enqueue_event(self._decision_event(decision, dry_run=False))
 
         scheduler_run_id = f"tick_{uuid4().hex[:12]}"
-        self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
-        expired = self.expire_stale_leases()
+        # Stale lease expiry and run recording are also state mutations,
+        # even when all proposed decisions were blocked or the page is empty.
+        expired_count = 0
+        if not request.dry_run:
+            self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
+            expired_count = self.expire_stale_leases().get("expired_count", 0)
         response = SchedulerTickResponse(
             scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
-            evaluated=len(candidates[: request.limit]),
+            evaluated=len(verified_candidates),
             recommended=sum(1 for d in decisions if d.status == AssignmentStatus.RECOMMENDED),
             approval_required=sum(1 for d in decisions if d.status == AssignmentStatus.APPROVAL_REQUIRED),
             skipped=sum(1 for d in decisions if d.status == AssignmentStatus.BLOCKED),
-            released_expired=expired.get("expired_count", 0),
+            released_expired=expired_count,
             decisions=decisions,
         )
-        self.cache.record_scheduler_run(
-            scheduler_run_id=scheduler_run_id,
-            trigger_reason=request.reason,
-            dry_run=request.dry_run,
-            evaluated_count=response.evaluated,
-            recommended_count=response.recommended,
-            skipped_count=response.skipped,
-        )
+        if not request.dry_run:
+            self.cache.record_scheduler_run(
+                scheduler_run_id=scheduler_run_id,
+                trigger_reason=request.reason,
+                dry_run=False,
+                evaluated_count=response.evaluated,
+                recommended_count=response.recommended,
+                skipped_count=response.skipped,
+            )
         return response
 
     async def approve_assignment(self, assignment_id: str, request: AssignmentApprovalRequest) -> dict:
@@ -222,6 +297,16 @@ class AssignmentService:
                 "accepted": False,
                 "reason": "assignment_not_found_in_local_cache",
                 "canonical_source": "neo4j_via_assistx",
+            }
+        if request.dry_run:
+            return {
+                "accepted": False,
+                "preview": True,
+                "dry_run": True,
+                "reason": "approval_preview_only_no_event_enqueued",
+                "would_emit_event_type": EventType.ASSIGNMENT_APPROVED.value,
+                "canonical_source": "neo4j_via_assistx",
+                "cache_role": "read_only_assignment_preview",
             }
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_APPROVED,
@@ -272,6 +357,16 @@ class AssignmentService:
                 "accepted": False,
                 "reason": "assignment_not_found_in_local_cache",
                 "canonical_source": "neo4j_via_assistx",
+            }
+        if request.dry_run:
+            return {
+                "accepted": False,
+                "preview": True,
+                "dry_run": True,
+                "reason": "release_preview_only_no_event_enqueued",
+                "would_emit_event_type": EventType.ASSIGNMENT_RELEASED.value,
+                "canonical_source": "neo4j_via_assistx",
+                "cache_role": "read_only_assignment_preview",
             }
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_RELEASED,
@@ -331,10 +426,47 @@ class AssignmentService:
         limit: int = 25,
         include_processed: bool = False,
     ) -> dict:
-        events = self.cache.list_inbound_events(limit=limit, event_type=event_type)
+        # Select eligibility before applying LIMIT. Newest-first paging
+        # followed by in-Python processed filtering can strand thousands of
+        # older unprocessed receipts indefinitely. Selection has no effects.
+        events = (
+            self.cache.list_inbound_events(limit=limit, event_type=event_type)
+            if include_processed
+            else self.cache.list_unprocessed_inbound_events(
+                limit=limit, event_type=event_type
+            )
+        )
+        # Historically "dry_run=true" still wrote assignment cache/outbox
+        # and inbound processing markers. That is NOT a safe preview on a
+        # historical backlog. Strictly return only a read-only eligibility
+        # plan; do not call evaluate(), scheduler_tick(), or mark processed.
+        router_snapshot_event_types = {str(kind) for kind in ROUTER_SNAPSHOT_EVENTS}
+        if dry_run:
+            preview = []
+            for event_row in events:
+                event = event_row["payload"]
+                event_name = event.get("event_type")
+                if event_name == EventType.TASK_CANDIDATE_CREATED:
+                    action = "would_evaluate_assignment"
+                elif event_name in router_snapshot_event_types:
+                    action = "would_trigger_scheduler_tick"
+                else:
+                    action = "would_ignore"
+                preview.append(
+                    {"event_type": event_name, "action": action, "dry_run": True}
+                )
+            return {
+                "processed": 0,
+                "would_process": len(preview),
+                "skipped_already_processed": 0,
+                "actions": preview,
+                "dry_run": True,
+                "read_only_preview": True,
+                "source": "sqlite_inbound_event_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         actions: list[dict] = []
         skipped_already_processed = 0
-        router_snapshot_event_types = {str(event_type) for event_type in ROUTER_SNAPSHOT_EVENTS}
         for event_row in events:
             event = event_row["payload"]
             if not include_processed and self._inbound_event_was_processed(event["idempotency_key"]):
@@ -401,6 +533,23 @@ class AssignmentService:
 
     async def dispatch_outbox(self, dry_run: bool = True, limit: int = 25) -> dict:
         events = self.cache.pending_events(limit=limit)
+        # A preview must not mutate delivery state on a positive remote ACK.
+        # It must also avoid contacting AssistX or returning raw event payloads
+        # (which may contain private task content) merely to list pending work.
+        if dry_run:
+            return {
+                "dry_run": True,
+                "considered": len(events),
+                "delivered": 0,
+                "failed": 0,
+                "dry_run_events": [
+                    {"event_type": str(event.event_type), "action": "would_check_and_dispatch"}
+                    for event in events
+                ],
+                "read_only_preview": True,
+                "summary": self.cache.outbox_summary(),
+                "canonical_source": "neo4j_via_assistx",
+            }
         delivered = 0
         failed = 0
         dry_run_events = []
@@ -409,9 +558,6 @@ class AssignmentService:
             if status.get("known") and status.get("applied", True):
                 self.cache.mark_event_delivered(event.idempotency_key)
                 delivered += 1
-                continue
-            if dry_run:
-                dry_run_events.append(event.model_dump(mode="json"))
                 continue
             try:
                 result = await self.assistx.post_event(event, dry_run=False)
@@ -564,8 +710,25 @@ class AssignmentService:
         await asyncio.gather(*(_one(t.get("id") or t.get("task_id")) for t in dispatchable))
         return {"dry_run": False, "considered": len(ready), "enqueued": enqueued, "failed": failed, "skipped": skipped}
 
-    async def reconcile_outbox(self, limit: int = 100) -> dict:
+    async def reconcile_outbox(
+        self, limit: int = 100, dry_run: bool = True
+    ) -> dict:
         events = self.cache.pending_events(limit=limit)
+        if dry_run:
+            # A preview is a bounded LOCAL SELECT only. Do not call remote
+            # status (which can leak receipt keys) or mark ACK/dead-letter
+            # state; do not return IDs, payloads or opaque remote responses.
+            return {
+                "dry_run": True,
+                "read_only_preview": True,
+                "checked": 0,
+                "would_check": len(events),
+                "reconciled_delivered": 0,
+                "conflicts_dead_lettered": 0,
+                "conflicts": [],
+                "summary": self.cache.outbox_summary(),
+                "canonical_source": "neo4j_via_assistx",
+            }
         delivered_keys: list[str] = []
         conflicts: list[dict] = []
         for event in events:
@@ -577,6 +740,8 @@ class AssignmentService:
                 conflicts.append({"idempotency_key": event.idempotency_key, "status": status})
         reconciled = self.cache.reconcile_delivered(delivered_keys)
         return {
+            "dry_run": False,
+            "read_only_preview": False,
             "checked": len(events),
             "reconciled_delivered": reconciled,
             "conflicts_dead_lettered": len(conflicts),
