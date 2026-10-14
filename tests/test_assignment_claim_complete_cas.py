@@ -228,3 +228,32 @@ def test_invalid_completion_status_rejected_at_schema(tmp_path, invalid_status):
     result = complete(client, a["assignment_id"], a["task_id"], status=invalid_status)
     assert result.status_code == 422
     assert witness(client) == before
+
+
+def test_heartbeat_cas_never_shortens_an_existing_longer_lease(tmp_path):
+    client = make_client(tmp_path)
+    a = create_assignment(client, "synthetic-long-lease")
+    assert claim(client, a["assignment_id"], a["task_id"]).status_code == 200
+    svc = client.app.state.assignment_service
+    later = "2099-01-01T00:00:00+00:00"
+    with svc.cache.connect() as db:
+        db.execute(
+            "UPDATE assignments SET lease_expires_at=?, "
+            "payload_json=json_set(payload_json,'$.lease_expires_at',?) "
+            "WHERE assignment_id=?",
+            (later, later, a["assignment_id"]),
+        )
+    event = svc.record_heartbeat_with_lease_renewal(
+        HeartbeatRequest(
+            node_id="synthetic-node", worker_id="worker-a",
+            assignment_id=a["assignment_id"],
+        )
+    )
+    assert event.payload["lease_renewed"] is True
+    with svc.cache.connect() as db:
+        row = db.execute(
+            "SELECT lease_expires_at FROM assignments WHERE assignment_id=?",
+            (a["assignment_id"],)
+        ).fetchone()
+        assert row[0] == later
+    assert svc.cache.get_assignment(a["assignment_id"])["lease_expires_at"] == later
