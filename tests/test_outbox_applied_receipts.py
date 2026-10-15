@@ -1,6 +1,8 @@
-"""Fail-closed acknowledgement tests for candidate in isolated source copy."""
+"""Offline exact-Boolean ACK regression tests for outbox finalization."""
 import asyncio
+
 import pytest
+
 from auto_assign.models import EventEnvelope
 from auto_assign.service import AssignmentService
 
