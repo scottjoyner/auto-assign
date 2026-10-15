@@ -406,7 +406,7 @@ class AssignmentService:
         dry_run_events = []
         for event in events:
             status = await self.assistx.event_status(event.idempotency_key)
-            if status.get("known") and status.get("applied", True):
+            if status.get("known") is True and status.get("applied") is True:
                 self.cache.mark_event_delivered(event.idempotency_key)
                 delivered += 1
                 continue
@@ -570,7 +570,7 @@ class AssignmentService:
         conflicts: list[dict] = []
         for event in events:
             status = await self.assistx.event_status(event.idempotency_key)
-            if status.get("known") and status.get("applied", True):
+            if status.get("known") is True and status.get("applied") is True:
                 delivered_keys.append(event.idempotency_key)
             elif status.get("known") and status.get("conflict"):
                 self.cache.mark_event_failed(event.idempotency_key, "canonical graph conflict", dead_letter=True)
