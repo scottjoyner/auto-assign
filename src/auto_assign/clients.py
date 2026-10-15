@@ -136,7 +136,7 @@ class AssistXClient:
             response = await self._request_with_retry(
                 "POST", url, json=event.model_dump(mode="json")
             )
-            return {"delivered": response.is_success or response.status_code == 409, "status_code": response.status_code}
+            return {"delivered": response.is_success, "status_code": response.status_code}
         except Exception as exc:
             logger.warning("post_event failed after retries: %s", exc)
             return {"delivered": False, "error": str(exc)}
