@@ -6,6 +6,7 @@ import pytest
 from auto_assign.models import EventEnvelope
 from auto_assign.service import AssignmentService
 
+
 class Cache:
     def __init__(self):
         self.delivered=[]
