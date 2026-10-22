@@ -1,9 +1,19 @@
 # auto-assign
 
 <!-- repo-entrypoint-guide:start -->
-> **Integration status:** This README describes the standalone assignment-service design. The newer [`auto-assist`](https://github.com/scottjoyner/auto-assist) README identifies assignment authority as consolidated into AssistX and calls `auto-assign` retired in the reconciled deployment. Consult that control-plane contract before enabling this service alongside the current stack.
->
-> **Safety:** Do not introduce a second task database or claim/lease authority; preserve the explicit Neo4j ownership model described below.
+## Repository guide
+
+**Integration status:** This README describes the standalone assignment-service design. The newer [`auto-assist`](https://github.com/scottjoyner/auto-assist) README identifies assignment authority as consolidated into AssistX and calls `auto-assign` retired in the reconciled deployment. Consult that control-plane contract before enabling this service alongside the current stack.
+
+**Safety:** Do not introduce a second task database or claim/lease authority; preserve the explicit Neo4j ownership model described below.
+
+### Find your way
+
+- [System role](#system-role)
+- [Integration boundaries](#integration-boundaries)
+- [Operating model](#operating-model)
+- [Documentation](#documentation)
+- [Safety defaults](#safety-defaults)
 <!-- repo-entrypoint-guide:end -->
 
 
