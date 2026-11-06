@@ -300,7 +300,12 @@ class RouterClient:
         self.base_url = settings.router_base_url.rstrip("/")
         self.timeout = settings.router_timeout_seconds
         self._admin_token = (settings.router_admin_token or "").strip()
-        self._client = httpx.AsyncClient(timeout=self.timeout)
+        # Never allow HTTP_PROXY/HTTPS_PROXY environment inheritance to forward
+        # Router admin credentials through a third-party proxy. Never follow
+        # redirects on a credential-bearing admin request.
+        self._client = httpx.AsyncClient(
+            timeout=self.timeout, trust_env=False, follow_redirects=False,
+        )
 
     async def close(self):
         await self._client.aclose()
