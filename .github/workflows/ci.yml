@@ -35,5 +35,7 @@ jobs:
       - name: Test source and isolated ASGI contracts (NOT live integration)
         env:
           AUTO_ASSIGN_INTEGRATION_MODE: synthetic
+          # Synthetic CI requests simulate local clients; never set in production.
+          AUTO_ASSIGN_ALLOW_UNAUTHENTICATED_LOCAL_DEV: '1'
           PYTHONDONTWRITEBYTECODE: '1'
         run: python -B -m pytest -q -p no:cacheprovider
