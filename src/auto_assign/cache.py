@@ -46,9 +46,12 @@ class CacheStore:
         try:
             with self.connect() as conn:
                 conn.execute("SELECT 1").fetchone()
-            return {"reachable": True, "path": str(self.path), "role": "cache_outbox_only"}
+            # This feeds the public /health route; filesystem location is
+            # operational metadata, not appropriate for anonymous callers.
+            return {"reachable": True, "role": "cache_outbox_only"}
         except Exception as exc:  # pragma: no cover
-            return {"reachable": False, "path": str(self.path), "error": str(exc), "role": "cache_outbox_only"}
+            # SQLite exceptions may reveal filesystem paths or database data.
+            return {"reachable": False, "error": type(exc).__name__, "role": "cache_outbox_only"}
 
     def record_scheduler_run(
         self,
