@@ -17,6 +17,7 @@ async def check_auth(
     *, token: str = "", dev: bool = False, peer: str = "10.0.3.42",
     method: str = "POST", path: str = "/api/assignment-control",
     authorization: tuple[str, ...] = (),
+    forwarded: tuple[str, ...] = (),
 ) -> tuple[int, bool]:
     settings = Settings(
         api_token=token, allow_unauthenticated_local_dev=dev,
@@ -35,8 +36,12 @@ async def check_auth(
         "raw_path": path.encode("ascii"),
         "root_path": "",
         "query_string": b"",
-        "headers": [(b"authorization", value.encode("utf-8"))
-                    for value in authorization],
+        "headers": (
+            [(b"authorization", value.encode("utf-8"))
+             for value in authorization]
+            + [(b"x-forwarded-for", value.encode("utf-8"))
+               for value in forwarded]
+        ),
         "client": (peer, 12345),
         "server": ("testserver", 8090),
         "app": fake_app,
@@ -65,9 +70,21 @@ async def test_explicit_local_dev_flag_never_allows_remote_peers(peer):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("peer", ["127.0.0.1", "::1", "testclient"])
-async def test_explicit_local_dev_flag_allows_only_test_or_loopback(peer):
-    assert await check_auth(peer=peer, dev=True) == (200, True)
+@pytest.mark.parametrize("peer", ["127.0.0.1", "::1"])
+async def test_even_local_network_peers_cannot_use_synthetic_bypass(peer):
+    assert await check_auth(peer=peer, dev=True) == (401, False)
+
+
+@pytest.mark.asyncio
+async def test_explicit_synthetic_testclient_opt_in():
+    assert await check_auth(peer="testclient", dev=True) == (200, True)
+
+
+@pytest.mark.asyncio
+async def test_proxy_forwarded_client_must_not_use_synthetic_bypass():
+    assert await check_auth(
+        peer="testclient", dev=True, forwarded=("testclient",)
+    ) == (401, False)
 
 
 @pytest.mark.asyncio
