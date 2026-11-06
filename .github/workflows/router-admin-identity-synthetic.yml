@@ -5,6 +5,10 @@ on:
     branches: [main, chore/restore-ruff-clean-baseline-20261105]
     paths:
       - src/auto_assign/clients.py
+      - src/auto_assign/main.py
+      - src/auto_assign/settings.py
+      - tests/test_api_auth_failclosed.py
+      - .github/workflows/ci.yml
       - tests/test_router_admin_identity_boundary.py
       - .github/workflows/router-admin-identity-synthetic.yml
   workflow_dispatch:
@@ -37,13 +41,13 @@ jobs:
           python - <<'PY'
           import ast
           from pathlib import Path
-          for path in ("src/auto_assign/clients.py", "tests/test_router_admin_identity_boundary.py"):
+          for path in ("src/auto_assign/clients.py", "src/auto_assign/main.py", "src/auto_assign/settings.py", "tests/test_router_admin_identity_boundary.py", "tests/test_api_auth_failclosed.py"):
               ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
           PY
       - name: Execute live-code mock-HTTP identity regressions
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B -m pytest -q -p no:cacheprovider tests/test_router_admin_identity_boundary.py
+        run: python -B -m pytest -q -p no:cacheprovider tests/test_router_admin_identity_boundary.py tests/test_api_auth_failclosed.py
       - name: Full composite source lint (do not suppress baseline errors)
         run: ruff check src tests
       - name: Compile combined source
@@ -51,5 +55,6 @@ jobs:
       - name: Full offline composite tests (NOT live fleet integration)
         env:
           AUTO_ASSIGN_INTEGRATION_MODE: synthetic
+          AUTO_ASSIGN_ALLOW_UNAUTHENTICATED_LOCAL_DEV: '1'
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -B -m pytest -q -p no:cacheprovider
