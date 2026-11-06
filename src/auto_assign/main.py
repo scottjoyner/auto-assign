@@ -126,8 +126,8 @@ async def api_auth_middleware(request: Request, call_next):
     """Enforce a shared-secret on every route except /health and /metrics.
 
     Accept one Bearer token or one Basic password with a constant-time check.
-    A missing token denies by default. Development bypass requires an explicit
-    opt-in AND a directly connected loopback/test client.
+    A missing token denies by default. Synthetic tests alone may opt in;
+    direct loopback HTTP clients and forwarded peers never qualify.
     """
     settings = None
     svc = getattr(request.app.state, "assignment_service", None)
@@ -140,10 +140,18 @@ async def api_auth_middleware(request: Request, call_next):
     if not settings.api_token:
         # Do not let a missing environment variable turn a newly provisioned
         # instance into an unauthenticated scheduler/dispatch control plane.
-        # This opt-in bypass is for isolated local tests/development only.
+        # This opt-in bypass exists only for an in-process synthetic ASGI
+        # TestClient. Loopback network peers are NOT sufficient: a local
+        # reverse proxy may forward requests originating on the public WAN.
+        # Reject forwarded identities so a trusted proxy cannot reinterpret
+        # attacker-supplied X-Forwarded-For as the synthetic TestClient peer.
         peer = request.client.host if request.client is not None else ""
+        forwarded = any(
+            key in request.headers
+            for key in ("forwarded", "x-forwarded-for", "x-real-ip")
+        )
         if (settings.allow_unauthenticated_local_dev
-                and peer in {"127.0.0.1", "::1", "testclient"}):
+                and peer == "testclient" and not forwarded):
             return await call_next(request)
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
