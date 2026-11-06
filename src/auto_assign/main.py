@@ -113,7 +113,9 @@ app.add_middleware(
 )
 
 import base64
+import binascii
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +127,9 @@ _PUBLIC_PATHS = {"/health", "/metrics"}
 async def api_auth_middleware(request: Request, call_next):
     """Enforce a shared-secret on every route except /health and /metrics.
 
-    Auth is satisfied by either ``Authorization: Bearer <token>`` or HTTP Basic
-    auth whose password equals the configured ``AUTO_ASSIGN_API_TOKEN``. When no
-    token is configured the check is skipped (local-dev only) with a warning.
+    Accept one Bearer token or one Basic password with a constant-time check.
+    A missing token denies by default. Development bypass requires an explicit
+    opt-in AND a directly connected loopback/test client.
     """
     settings = None
     svc = getattr(request.app.state, "assignment_service", None)
@@ -138,20 +140,34 @@ async def api_auth_middleware(request: Request, call_next):
     if request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
     if not settings.api_token:
-        logger.warning("API auth disabled: AUTO_ASSIGN_API_TOKEN is not set")
-        return await call_next(request)
+        # Do not let a missing environment variable turn a newly provisioned
+        # instance into an unauthenticated scheduler/dispatch control plane.
+        # This opt-in bypass is for isolated local tests/development only.
+        peer = request.client.host if request.client is not None else ""
+        if (settings.allow_unauthenticated_local_dev
+                and peer in {"127.0.0.1", "::1", "testclient"}):
+            return await call_next(request)
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
-    auth_header = request.headers.get("Authorization", "")
+    # Ambiguous duplicate Authorization headers are rejected, rather than
+    # leaving different proxies and ASGI implementations to select different
+    # credentials. Never log or echo the header material.
+    auth_headers = request.headers.getlist("authorization")
+    if len(auth_headers) != 1:
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+    auth_header = auth_headers[0]
     expected = settings.api_token
     authorized = False
     if auth_header.startswith("Bearer "):
-        authorized = auth_header[len("Bearer "):].strip() == expected
+        supplied = auth_header[len("Bearer "):].strip()
+        authorized = bool(supplied) and secrets.compare_digest(supplied, expected)
     elif auth_header.startswith("Basic "):
         try:
-            decoded = base64.b64decode(auth_header[len("Basic "):].strip()).decode("utf-8")
-            _user, _, pwd = decoded.partition(":")
-            authorized = pwd == expected
-        except Exception:
+            encoded = auth_header[len("Basic "):].strip()
+            decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+            _user, sep, pwd = decoded.partition(":")
+            authorized = bool(sep) and bool(pwd) and secrets.compare_digest(pwd, expected)
+        except (ValueError, UnicodeError, binascii.Error):
             authorized = False
     if not authorized:
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
