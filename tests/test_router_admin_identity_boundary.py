@@ -241,3 +241,21 @@ async def test_router_admin_client_disables_environment_proxy_and_redirects(monk
         assert captured["follow_redirects"] is False
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_health_redacts_transport_error_that_contains_sensitive_data():
+    client = RouterClient(Settings(router_base_url=BASE, router_admin_token=VALID))
+    original = client._client
+
+    def error_transport(request: httpx.Request):
+        raise httpx.ConnectError("SECRET_SHOULD_NEVER_REACH_PUBLIC_HEALTH", request=request)
+
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(error_transport))
+    try:
+        result = await client.health()
+        assert result == {"reachable": False, "error": "ConnectError"}
+        assert "SECRET_" not in str(result)
+    finally:
+        await client.close()
+        await original.aclose()
