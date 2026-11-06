@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
-from .metrics import REQUESTS, REQUEST_LATENCY
+from .metrics import REQUEST_LATENCY, REQUESTS
 from .tracing_utils import set_trace_context
 
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
