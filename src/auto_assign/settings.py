@@ -51,8 +51,8 @@ class Settings:
     # API auth: require a configured token for every non-public endpoint.
     # A missing secret must never accidentally expose mutable workload APIs.
     api_token: str = os.getenv("AUTO_ASSIGN_API_TOKEN", "")
-    # Explicit, opt-in local-only development bypass for isolated test clients.
-    # Not set in any deployment. Remote peers cannot use it.
+    # Explicit synthetic TestClient bypass only. Never enables unauthenticated
+    # loopback HTTP traffic, and must not be set in any deployment.
     allow_unauthenticated_local_dev: bool = _bool_env(
         "AUTO_ASSIGN_ALLOW_UNAUTHENTICATED_LOCAL_DEV", False
     )
