@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.requests import Request
 
 from . import __version__
-from .logging_utils import install_logging_middleware, setup_logging
-from .metrics import CONTENT_TYPE_LATEST, OUTBOX_PENDING, STALE_HEARTBEATS, generate_latest
-
-_start_time = time.time()
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
 from .control import AssignmentControlStore
+from .logging_utils import install_logging_middleware, setup_logging
+from .metrics import CONTENT_TYPE_LATEST, OUTBOX_PENDING, STALE_HEARTBEATS, generate_latest
 from .models import (
     AssignmentApprovalRequest,
     AssignmentClaimRequest,
@@ -33,6 +34,9 @@ from .models import (
 from .scorer import AssignmentScorer
 from .service import AssignmentService
 from .settings import Settings, get_settings
+
+_start_time = time.time()
+logger = logging.getLogger(__name__)
 
 
 def build_service(settings: Settings | None = None) -> AssignmentService:
@@ -103,7 +107,6 @@ app = FastAPI(
 setup_logging()
 install_logging_middleware(app)
 
-from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080,http://localhost:8090").split(","),
@@ -111,11 +114,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-import base64
-import logging
-
-logger = logging.getLogger(__name__)
 
 # Paths that are always open (health probe + metrics scrape).
 _PUBLIC_PATHS = {"/health", "/metrics"}
