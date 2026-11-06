@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from pathlib import Path
 import stat
 import subprocess
+from pathlib import Path
 
 CLIENTS = ("assistx-api", "assistx-worker", "auto-assign")
 TOKEN_KEY = "AUTO_ROUTER_ADMIN_TOKEN"

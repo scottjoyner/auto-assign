@@ -3,9 +3,10 @@ import json
 import os
 
 import pytest
-
 from scripts.router_admin_token_release_gate import (
-    CLIENTS, assess, source_token,
+    CLIENTS,
+    assess,
+    source_token,
 )
 
 
