@@ -9,7 +9,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from auto_assign.clients import RouterClient
+from auto_assign.cache import CacheStore
+from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.settings import Settings
 
 BASE = "http://router.example.invalid"
@@ -259,3 +260,47 @@ async def test_public_health_redacts_transport_error_that_contains_sensitive_dat
     finally:
         await client.close()
         await original.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_health_redacts_assistx_transport_exception():
+    settings = Settings(
+        assistx_base_url="http://synthetic-assistx.invalid",
+        assistx_auth_user="synthetic-user",
+        assistx_auth_pass="SECRET_BASIC_PASSWORD",
+    )
+    client = AssistXClient(settings)
+    original = client._client
+
+    def error_transport(request: httpx.Request):
+        raise httpx.ConnectError("SECRET_BASIC_PASSWORD SECRET_PRIVATE_URL", request=request)
+
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(error_transport))
+    try:
+        result = await client.health()
+        assert result == {
+            "reachable": False, "error": "ConnectError", "brain": "neo4j_via_assistx",
+        }
+        assert "SECRET_" not in str(result)
+    finally:
+        await client.close()
+        await original.aclose()
+
+
+def test_public_cache_health_redacts_absolute_path_and_sqlite_exception(tmp_path, monkeypatch):
+    store = CacheStore(tmp_path / "SECRET_LOCATION" / "private.sqlite3")
+    try:
+        assert store.health() == {"reachable": True, "role": "cache_outbox_only"}
+
+        def broken_connection():
+            raise RuntimeError("SECRET_SQLITE_PATH_OR_CONTENT")
+
+        monkeypatch.setattr(store, "connect", broken_connection)
+        result = store.health()
+        assert result == {
+            "reachable": False, "error": "RuntimeError", "role": "cache_outbox_only",
+        }
+        assert "SECRET_" not in str(result)
+        assert "private.sqlite3" not in str(result)
+    finally:
+        store.close()
