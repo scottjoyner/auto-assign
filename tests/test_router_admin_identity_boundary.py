@@ -20,7 +20,8 @@ WRONG = "synthetic-stale-operator-credential"
 def _mock_router(
     *, token: str = VALID, anonymous: int = 401,
     authorized: int = 200, failed_path: str | None = None,
-    clis: int = 404,
+    clis: int = 404, anon_by_path: dict[str, int] | None = None,
+    malformed_path: str | None = None,
 ):
     calls: list[tuple[str, bool]] = []
 
@@ -36,13 +37,16 @@ def _mock_router(
             "/admin/agent-clis", "/admin/ops/summary",
         }, path
         if not supplied:
-            return httpx.Response(anonymous, json={"public": True})
+            code = (anon_by_path or {}).get(path, 404 if path == "/admin/agent-clis" else anonymous)
+            return httpx.Response(code, json={"public": True})
         if path == failed_path:
             return httpx.Response(401, json={"detail": "denied"})
         if supplied != VALID:
             return httpx.Response(authorized, json={"detail": "denied"})
         if path == "/admin/agent-clis":
             return httpx.Response(clis, json={"agents": []})
+        if path == malformed_path:
+            return httpx.Response(200, content="not-valid-json")
         payload = {
             "/admin/context": {
                 "context": {"revision": "synthetic-v1", "providers": [{"id": "p1"}],
@@ -71,9 +75,9 @@ async def test_secure_valid_identity_and_optional_404_still_work():
         assert result.providers == [{"id": "p1"}]
         assert result.services == [{"id": "s1"}]
         assert result.agent_clis == []
-        assert calls[0] == ("/admin/context", False)
-        assert len(calls) == 6
-        assert all(token for _, token in calls[1:])
+        assert len(calls) == 10
+        assert not any(had_token for _, had_token in calls[:5])
+        assert all(had_token for _, had_token in calls[5:])
     finally:
         await client.close()
         await original.aclose()
@@ -87,7 +91,8 @@ async def test_legacy_anonymous_or_unverifiable_admin_never_admits_work(anonymou
         result = await client.snapshot()
         assert not result.reachable
         assert not result.providers and not result.services
-        assert calls == [("/admin/context", False)]
+        assert len(calls) == 5
+        assert all(not had_token for _, had_token in calls)
     finally:
         await client.close()
         await original.aclose()
@@ -112,8 +117,8 @@ async def test_wrong_credential_denied_by_secured_router():
         result = await client.snapshot()
         assert not result.reachable
         assert not result.services
-        assert calls[0] == ("/admin/context", False)
-        assert len(calls) == 6
+        assert len(calls) == 10
+        assert all(not had_token for _, had_token in calls[:5])
     finally:
         await client.close()
         await original.aclose()
@@ -159,7 +164,60 @@ async def test_explicit_anonymous_403_is_valid_negative_control():
     client, original, calls = _mock_router(anonymous=403)
     try:
         assert (await client.snapshot()).reachable
-        assert calls[0] == ("/admin/context", False)
+        assert len(calls) == 10
+        assert all(not had_token for _, had_token in calls[:5])
+    finally:
+        await client.close()
+        await original.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/admin/context", "/admin/quota", "/admin/circuits",
+    "/admin/agent-clis", "/admin/ops/summary",
+])
+async def test_mixed_auth_router_other_unguarded_routes_fail_before_token(path):
+    # This was the security gap in the first preflight implementation.
+    client, original, calls = _mock_router(
+        anon_by_path={path: 200}, token=VALID,
+    )
+    try:
+        result = await client.snapshot()
+        assert not result.reachable
+        assert result.providers == [] and result.services == []
+        assert len(calls) == 5
+        assert all(not had_token for _, had_token in calls)
+    finally:
+        await client.close()
+        await original.aclose()
+
+
+@pytest.mark.asyncio
+async def test_optional_absent_admin_clis_is_allowed_without_auth():
+    client, original, calls = _mock_router(anon_by_path={"/admin/agent-clis": 404})
+    try:
+        result = await client.snapshot()
+        assert result.reachable
+        assert len(calls) == 10
+    finally:
+        await client.close()
+        await original.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/admin/context", "/admin/quota", "/admin/circuits", "/admin/ops/summary",
+])
+async def test_malformed_authorized_response_returns_only_empty_snapshot(path):
+    client, original, _ = _mock_router(malformed_path=path)
+    try:
+        result = await client.snapshot()
+        assert not result.reachable
+        assert not result.providers
+        assert not result.services
+        assert not result.quota
+        assert not result.circuits
+        assert not result.ops_summary
     finally:
         await client.close()
         await original.aclose()
