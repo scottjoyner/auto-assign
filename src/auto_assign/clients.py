@@ -329,16 +329,28 @@ class RouterClient:
         if not self._admin_token:
             return snapshot
         try:
-            # If an anonymous request succeeds, the server is still exposing
-            # inherited /admin routes. Its 200 with an admin header could be
-            # equally unauthenticated and must NOT authorize auto-assignment.
-            # Do not inspect/store the response body or ever print secrets.
-            anonymous = await self._client.get(
-                f"{self.base_url}/admin/context",
-                headers=self._default_headers(),
-                follow_redirects=False,
+            # Guard the entire admin snapshot dependency, not only context:
+            # a mixed-version Router can require auth for /admin/context but
+            # still expose quota, circuits, or ops metadata anonymously.
+            # Never send the token until every required path denies anonymity.
+            # Optional /admin/agent-clis may be absent (404) on both versions.
+            # Never read or log the anonymous response bodies.
+            paths = (
+                "/admin/context", "/admin/quota", "/admin/circuits",
+                "/admin/agent-clis", "/admin/ops/summary",
             )
-            if anonymous.status_code not in (401, 403):
+            anonymous = await asyncio.gather(*(
+                self._client.get(
+                    f"{self.base_url}{path}",
+                    headers=self._default_headers(),
+                    follow_redirects=False,
+                )
+                for path in paths
+            ))
+            if any(resp.status_code not in (401, 403)
+                   for resp in (anonymous[0], anonymous[1], anonymous[2], anonymous[4])):
+                return snapshot
+            if anonymous[3].status_code not in (401, 403, 404):
                 return snapshot
 
             hdrs = self._default_headers(admin=True)
@@ -357,8 +369,11 @@ class RouterClient:
             if clis_resp.status_code not in (200, 404):
                 return snapshot
 
+            # Only publish a fully parsed, validated snapshot. If any response
+            # body is malformed, the caller receives the original empty state.
+            candidate = RouterSnapshot(reachable=False)
             self._apply_snapshot_payloads(
-                snapshot=snapshot,
+                snapshot=candidate,
                 context_payload=context_resp.json(),
                 quota_payload=quota_resp.json(),
                 circuits_payload=circuits_resp.json(),
@@ -366,9 +381,9 @@ class RouterClient:
                 ops_payload=ops_resp.json(),
                 reachable=True,
             )
+            return candidate if candidate.reachable else snapshot
         except Exception:
-            snapshot.reachable = False
-        return snapshot
+            return snapshot
 
     def _apply_snapshot_payloads(
         self,
