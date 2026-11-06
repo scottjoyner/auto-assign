@@ -221,3 +221,23 @@ async def test_malformed_authorized_response_returns_only_empty_snapshot(path):
     finally:
         await client.close()
         await original.aclose()
+
+
+@pytest.mark.asyncio
+async def test_router_admin_client_disables_environment_proxy_and_redirects(monkeypatch):
+    # A third-party proxy inherited from HTTP_PROXY must never receive a
+    # credential-bearing admin request. Redirects must also remain disabled.
+    constructor = httpx.AsyncClient
+    captured = {}
+
+    def capture_constructor(*args, **kwargs):
+        captured.update(kwargs)
+        return constructor(*args, **kwargs)
+
+    monkeypatch.setattr("auto_assign.clients.httpx.AsyncClient", capture_constructor)
+    client = RouterClient(Settings(router_base_url=BASE, router_admin_token=VALID))
+    try:
+        assert captured["trust_env"] is False
+        assert captured["follow_redirects"] is False
+    finally:
+        await client.close()
