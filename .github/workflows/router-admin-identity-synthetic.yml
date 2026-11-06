@@ -2,7 +2,7 @@ name: Auto-Assign Router identity boundary (synthetic)
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, chore/restore-ruff-clean-baseline-20261105]
     paths:
       - src/auto_assign/clients.py
       - tests/test_router_admin_identity_boundary.py
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install app and pinned synthetic test dependencies
-        run: python -m pip install --disable-pip-version-check -e . pytest==8.3.5 pytest-asyncio==0.25.3
+        run: python -m pip install --disable-pip-version-check -e '.[dev]' pytest==8.3.5 pytest-asyncio==0.25.3
       - name: Static compile without starting services
         run: |
           python - <<'PY'
@@ -39,3 +39,12 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -B -m pytest -q -p no:cacheprovider tests/test_router_admin_identity_boundary.py
+      - name: Full composite source lint (do not suppress baseline errors)
+        run: ruff check src tests
+      - name: Compile combined source
+        run: python -m compileall src tests
+      - name: Full offline composite tests (NOT live fleet integration)
+        env:
+          AUTO_ASSIGN_INTEGRATION_MODE: synthetic
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -B -m pytest -q -p no:cacheprovider
