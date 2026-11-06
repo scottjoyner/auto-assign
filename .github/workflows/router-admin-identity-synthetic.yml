@@ -1,0 +1,60 @@
+name: Auto-Assign Router identity boundary (synthetic)
+
+on:
+  pull_request:
+    branches: [main, chore/restore-ruff-clean-baseline-20261105]
+    paths:
+      - src/auto_assign/clients.py
+      - src/auto_assign/main.py
+      - src/auto_assign/settings.py
+      - tests/test_api_auth_failclosed.py
+      - .github/workflows/ci.yml
+      - tests/test_router_admin_identity_boundary.py
+      - .github/workflows/router-admin-identity-synthetic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  router-identity-synthetic:
+    name: Python ${{ matrix.python-version }} secure Router client
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout exact source without retained GitHub credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install app and pinned synthetic test dependencies
+        run: python -m pip install --disable-pip-version-check -e '.[dev]' pytest==8.3.5 pytest-asyncio==0.25.3
+      - name: Static compile without starting services
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          for path in ("src/auto_assign/clients.py", "src/auto_assign/main.py", "src/auto_assign/settings.py", "tests/test_router_admin_identity_boundary.py", "tests/test_api_auth_failclosed.py"):
+              ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
+          PY
+      - name: Execute live-code mock-HTTP identity regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -B -m pytest -q -p no:cacheprovider tests/test_router_admin_identity_boundary.py tests/test_api_auth_failclosed.py
+      - name: Full composite source lint (do not suppress baseline errors)
+        run: ruff check src tests
+      - name: Compile combined source
+        run: python -m compileall src tests
+      - name: Full offline composite tests (NOT live fleet integration)
+        env:
+          AUTO_ASSIGN_INTEGRATION_MODE: synthetic
+          AUTO_ASSIGN_ALLOW_UNAUTHENTICATED_LOCAL_DEV: '1'
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -B -m pytest -q -p no:cacheprovider
