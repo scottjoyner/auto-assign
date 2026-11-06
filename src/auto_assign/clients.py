@@ -305,26 +305,43 @@ class RouterClient:
     async def close(self):
         await self._client.aclose()
 
-    def _default_headers(self) -> dict[str, str]:
+    def _default_headers(self, *, admin: bool = False) -> dict[str, str]:
         hdrs = inject_trace_headers()
-        # Router admin endpoints require AUTO_ROUTER_ADMIN_TOKEN; without it the
-        # snapshot silently degrades to unreachable (401 on every admin probe).
-        token = self._admin_token
-        if token:
-            hdrs["X-Admin-Token"] = token
+        # Never attach operator/admin credentials to public health checks or
+        # the anonymous negative-control request.
+        if admin and self._admin_token:
+            hdrs["X-Admin-Token"] = self._admin_token
         return hdrs
 
     async def health(self) -> dict[str, Any]:
         try:
-            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers())
+            response = await self._client.get(
+                f"{self.base_url}/health", headers=self._default_headers()
+            )
             return {"reachable": response.is_success, "status_code": response.status_code}
         except Exception as exc:
             return {"reachable": False, "error": str(exc)}
 
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
+        # A configured admin token is required; public /health alone never
+        # establishes authorization to load routing or service metadata.
+        if not self._admin_token:
+            return snapshot
         try:
-            hdrs = self._default_headers()
+            # If an anonymous request succeeds, the server is still exposing
+            # inherited /admin routes. Its 200 with an admin header could be
+            # equally unauthenticated and must NOT authorize auto-assignment.
+            # Do not inspect/store the response body or ever print secrets.
+            anonymous = await self._client.get(
+                f"{self.base_url}/admin/context",
+                headers=self._default_headers(),
+                follow_redirects=False,
+            )
+            if anonymous.status_code not in (401, 403):
+                return snapshot
+
+            hdrs = self._default_headers(admin=True)
             context_resp, quota_resp, circuits_resp, clis_resp, ops_resp = await asyncio.gather(
                 self._client.get(f"{self.base_url}/admin/context", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/quota", headers=hdrs),
@@ -332,15 +349,22 @@ class RouterClient:
                 self._client.get(f"{self.base_url}/admin/agent-clis", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/ops/summary", headers=hdrs),
             )
+            # All required, scoped admin reads must explicitly succeed. The
+            # deprecated /admin/agent-clis endpoint is optional and may 404.
+            required = (context_resp, quota_resp, circuits_resp, ops_resp)
+            if any(response.status_code != 200 for response in required):
+                return snapshot
+            if clis_resp.status_code not in (200, 404):
+                return snapshot
 
             self._apply_snapshot_payloads(
                 snapshot=snapshot,
-                context_payload=context_resp.json() if context_resp.is_success else {},
-                quota_payload=quota_resp.json() if quota_resp.is_success else {},
-                circuits_payload=circuits_resp.json() if circuits_resp.is_success else {},
-                clis_payload=clis_resp.json() if clis_resp.is_success else {},
-                ops_payload=ops_resp.json() if ops_resp.is_success else {},
-                reachable=context_resp.is_success,
+                context_payload=context_resp.json(),
+                quota_payload=quota_resp.json(),
+                circuits_payload=circuits_resp.json(),
+                clis_payload=clis_resp.json() if clis_resp.status_code == 200 else {},
+                ops_payload=ops_resp.json(),
+                reachable=True,
             )
         except Exception:
             snapshot.reachable = False
