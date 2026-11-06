@@ -32,5 +32,8 @@ jobs:
         run: ruff check src tests
       - name: Compile
         run: python -m compileall src tests
-      - name: Test
-        run: pytest -q
+      - name: Test source and isolated ASGI contracts (NOT live integration)
+        env:
+          AUTO_ASSIGN_INTEGRATION_MODE: synthetic
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B -m pytest -q -p no:cacheprovider
