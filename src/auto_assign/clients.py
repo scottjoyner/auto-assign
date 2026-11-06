@@ -325,7 +325,10 @@ class RouterClient:
             )
             return {"reachable": response.is_success, "status_code": response.status_code}
         except Exception as exc:
-            return {"reachable": False, "error": str(exc)}
+            # The app exposes dependency health. Exception messages from
+            # third-party transport/proxy code can contain URL userinfo,
+            # environment settings or other secrets; return only a type.
+            return {"reachable": False, "error": type(exc).__name__}
 
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
