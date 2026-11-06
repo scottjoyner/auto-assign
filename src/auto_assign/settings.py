@@ -48,10 +48,14 @@ class Settings:
     dispatch_concurrency: int = _int_env("AUTO_ASSIGN_DISPATCH_CONCURRENCY", 50)
     drain_batch_size: int = _int_env("AUTO_ASSIGN_DRAIN_BATCH_SIZE", 200)
 
-    # API auth: shared secret (Bearer token or HTTP Basic password with any user).
-    # When empty, auth is disabled and a warning is logged at startup (safe default
-    # for local dev only — set AUTO_ASSIGN_API_TOKEN in any real deployment).
+    # API auth: require a configured token for every non-public endpoint.
+    # A missing secret must never accidentally expose mutable workload APIs.
     api_token: str = os.getenv("AUTO_ASSIGN_API_TOKEN", "")
+    # Explicit, opt-in local-only development bypass for isolated test clients.
+    # Not set in any deployment. Remote peers cannot use it.
+    allow_unauthenticated_local_dev: bool = _bool_env(
+        "AUTO_ASSIGN_ALLOW_UNAUTHENTICATED_LOCAL_DEV", False
+    )
 
     # Scorer lane base scores (comma-separated "lane=score" pairs)
     lane_base_scores: str = os.getenv("AUTO_ASSIGN_LANE_BASE_SCORES",
