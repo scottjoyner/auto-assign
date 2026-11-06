@@ -50,7 +50,9 @@ class AssistXClient:
                 "brain": "neo4j_via_assistx",
             }
         except Exception as exc:
-            return {"reachable": False, "error": str(exc), "brain": "neo4j_via_assistx"}
+            # /health is public; transport exceptions may contain private URLs,
+            # userinfo, response fragments, or upstream credential material.
+            return {"reachable": False, "error": type(exc).__name__, "brain": "neo4j_via_assistx"}
 
     async def get_backlog_candidates(self, limit: int = 25) -> list[AssignmentCandidate]:
         url = f"{self.base_url}/api/router/backlog-candidates"
