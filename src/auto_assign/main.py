@@ -126,8 +126,8 @@ async def api_auth_middleware(request: Request, call_next):
     """Enforce a shared-secret on every route except /health and /metrics.
 
     Accept one Bearer token or one Basic password with a constant-time check.
-    A missing token denies by default. Development bypass requires an explicit
-    opt-in AND a directly connected loopback/test client.
+    A missing token denies by default. Synthetic tests alone may opt in;
+    direct loopback HTTP clients and forwarded peers never qualify.
     """
     settings = None
     svc = getattr(request.app.state, "assignment_service", None)
