@@ -14,14 +14,13 @@ See docs/LLD_UNIFIED_FLEET.md §1 and §2 (Trace Observability / G1).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import Lane
-
 
 try:
     from assistx.contracts.event_envelope import (
@@ -39,7 +38,7 @@ try:
     _USING_CANONICAL = True
 except ImportError:
 
-    class AuthState(str, Enum):
+    class AuthState(str, Enum):  # noqa: UP042 - preserve canonical wire enum semantics
         """Mirror of assistx.contracts.AuthState (Sophia §5.6)."""
 
         AUTHENTICATED_SCOTT = "authenticated_scott"
@@ -55,7 +54,7 @@ except ImportError:
 
         user_id: str = Field(..., description="Stable identifier of the actor.")
         auth_state: AuthState = Field(..., description="Voice/identity auth outcome.")
-        display_name: Optional[str] = None
+        display_name: str | None = None
 
     class EventLink(BaseModel):
         """Mirror of assistx.contracts.EventLink."""
@@ -82,9 +81,9 @@ except ImportError:
             ...,
             description="Required UUID tying an event to a trace group.",
         )
-        actor: Optional[Actor] = None
+        actor: Actor | None = None
         ts: datetime = Field(
-            default_factory=lambda: datetime.now(timezone.utc),
+            default_factory=lambda: datetime.now(UTC),
             description="Event timestamp (UTC).",
         )
         payload: dict[str, Any] = Field(default_factory=dict)
@@ -95,8 +94,8 @@ except ImportError:
         def _valid_correlation_id(cls, value: str) -> str:
             try:
                 uuid.UUID(value)
-            except (ValueError, AttributeError, TypeError):
-                raise ValueError("correlation_id must be a valid UUID")
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ValueError("correlation_id must be a valid UUID") from exc
             return value
 
     # Re-export under the canonical name too, for callers that prefer it.

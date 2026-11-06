@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
 from .control import AssignmentControlStore
-from .events import EventType, ROUTER_SNAPSHOT_EVENTS
+from .events import ROUTER_SNAPSHOT_EVENTS, EventType
 from .models import (
     AssignmentApprovalRequest,
     AssignmentCandidate,
@@ -22,7 +23,6 @@ from .models import (
     AssignmentStatus,
     EventEnvelope,
     HeartbeatRequest,
-    Lane,
     RouterSnapshot,
     SchedulerTickRequest,
     SchedulerTickResponse,

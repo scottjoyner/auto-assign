@@ -53,6 +53,12 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
+# These modules deliberately initialize runtime state before late imports.
+# Keep E402 waived narrowly here; all other lint checks remain required.
+[tool.ruff.lint.per-file-ignores]
+"src/auto_assign/main.py" = ["E402"]
+"src/auto_assign/service.py" = ["E402"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

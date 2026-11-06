@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 try:
-    from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, REGISTRY, generate_latest
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        REGISTRY,
+        Counter,
+        Gauge,
+        Histogram,
+        generate_latest,
+    )
 except ModuleNotFoundError:
     class _NoopMetric:
         def __init__(self, *args, **kwargs):
