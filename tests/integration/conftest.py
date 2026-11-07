@@ -1,48 +1,97 @@
-"""Integration test fixtures for cross-service health checks."""
+"""Offline HTTP-contract fixtures; opt in to live services explicitly.
 
+The synthetic mode exercises the REAL auto-assign ASGI app and SQLite.
+AssistX/Router are bounded fake health transports, NOT integration evidence
+for a production or staging multi-service rollout.
+"""
 from __future__ import annotations
 
 import os
 
 import httpx
 import pytest
-
-ASSISTX_URL = os.getenv("ASSISTX_URL", "http://localhost:8000")
-ROUTER_URL = os.getenv("ROUTER_URL", "http://localhost:8088")
-ASSIGN_URL = os.getenv("ASSIGN_URL", "http://localhost:8090")
+from fastapi.testclient import TestClient
 
 
-def _assign_auth_headers() -> dict[str, str]:
-    """Auth headers for auto-assign /api/* routes.
+def _health_transport(name: str) -> httpx.MockTransport:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET" or request.url.path != "/health":
+            return httpx.Response(404)
+        headers = {
+            key: value
+            for key in ("X-Correlation-ID", "X-Trace-ID")
+            if (value := request.headers.get(key))
+        }
+        return httpx.Response(
+            200, json={"service": name, "ok": True}, headers=headers,
+        )
 
-    Token comes from the environment, falling back to the deployed .env next
-    to this checkout so integration runs against a secured live service work
-    without extra setup.
-    """
-    token = os.getenv("AUTO_ASSIGN_API_TOKEN", "").strip()
-    if not token:
-        env_file = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
-        try:
-            with open(env_file) as fh:
-                for line in fh:
-                    if line.startswith("AUTO_ASSIGN_API_TOKEN="):
-                        token = line.split("=", 1)[1].strip()
-                        break
-        except OSError:
-            pass
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    return httpx.MockTransport(respond)
 
 
 @pytest.fixture
-def assistx_client() -> httpx.Client:
-    return httpx.Client(base_url=ASSISTX_URL, timeout=10)
+def assistx_client():
+    if os.getenv("AUTO_ASSIGN_INTEGRATION_MODE") == "live":
+        with httpx.Client(base_url=os.environ["ASSISTX_URL"], timeout=10) as client:
+            yield client
+        return
+    with httpx.Client(
+        base_url="http://synthetic-assistx.invalid",
+        transport=_health_transport("assistx"),
+        timeout=2,
+    ) as client:
+        yield client
 
 
 @pytest.fixture
-def router_client() -> httpx.Client:
-    return httpx.Client(base_url=ROUTER_URL, timeout=10)
+def router_client():
+    if os.getenv("AUTO_ASSIGN_INTEGRATION_MODE") == "live":
+        with httpx.Client(base_url=os.environ["ROUTER_URL"], timeout=10) as client:
+            yield client
+        return
+    with httpx.Client(
+        base_url="http://synthetic-router.invalid",
+        transport=_health_transport("auto-router"),
+        timeout=2,
+    ) as client:
+        yield client
 
 
 @pytest.fixture
-def assign_client() -> httpx.Client:
-    return httpx.Client(base_url=ASSIGN_URL, timeout=10, headers=_assign_auth_headers())
+def assign_client(tmp_path):
+    from auto_assign import main
+    from auto_assign.settings import Settings
+
+    if os.getenv("AUTO_ASSIGN_INTEGRATION_MODE") == "live":
+        token = os.environ["AUTO_ASSIGN_API_TOKEN"]
+        assert token, "Staging integration token must be provisioned"
+        with httpx.Client(
+            base_url=os.environ["ASSIGN_URL"],
+            timeout=10,
+            headers={"Authorization": "Bearer " + token},
+        ) as client:
+            yield client
+        return
+
+    settings = Settings(
+        database_url="sqlite:///" + str(tmp_path / "cache.sqlite3"),
+        api_token="synthetic-contract-only",
+        scheduler_enabled=False,
+        dispatch_enabled=True,
+        direct_workers_enabled=False,
+    )
+    service = main.build_service(settings)
+    service.assistx._client = httpx.AsyncClient(
+        transport=_health_transport("assistx"), timeout=2,
+    )
+    service.router._client = httpx.AsyncClient(
+        transport=_health_transport("auto-router"), timeout=2,
+    )
+    assert not hasattr(main.app.state, "assignment_service")
+    main.app.state.assignment_service = service
+    try:
+        with TestClient(main.app) as client:
+            client.headers["Authorization"] = "Bearer synthetic-contract-only"
+            yield client
+    finally:
+        del main.app.state.assignment_service

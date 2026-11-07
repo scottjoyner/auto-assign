@@ -52,3 +52,13 @@ def test_stale_heartbeat_watchdog_surface_is_available(assign_client: httpx.Clie
     health = assign_client.get("/health").json()
     assert health["scheduler"]["control"]["mode"] == "enabled"
     assert health["scheduler"]["dispatch_enabled"] is True
+
+
+def test_stale_heartbeat_endpoint_denies_invalid_and_absent_credentials(
+    assign_client: httpx.Client,
+) -> None:
+    url = "/api/heartbeats/stale?limit=5&stale_after_seconds=1"
+    wrong = assign_client.get(url, headers={"Authorization": "Bearer invalid-test-token"})
+    absent = assign_client.get(url, headers={"Authorization": ""})
+    assert wrong.status_code == 401
+    assert absent.status_code == 401

@@ -32,5 +32,7 @@ jobs:
         run: ruff check src tests
       - name: Compile
         run: python -m compileall src tests
-      - name: Test
+      - name: Test (unit + synthetic HTTP contracts; not live multi-service)
+        env:
+          AUTO_ASSIGN_INTEGRATION_MODE: synthetic
         run: pytest -q
