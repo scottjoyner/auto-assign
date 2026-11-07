@@ -1,0 +1,27 @@
+name: Router admin token cutover preflight (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/router_admin_token_release_gate.py'
+      - 'tests/test_router_admin_token_release_gate.py'
+      - '.github/workflows/router-admin-token-release-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-credential-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pytest
+      - run: python -B -m compileall -q scripts/router_admin_token_release_gate.py tests/test_router_admin_token_release_gate.py
+      - run: PYTHONPATH=. python -B -m pytest -q -p no:cacheprovider tests/test_router_admin_token_release_gate.py
