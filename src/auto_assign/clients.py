@@ -50,7 +50,9 @@ class AssistXClient:
                 "brain": "neo4j_via_assistx",
             }
         except Exception as exc:
-            return {"reachable": False, "error": str(exc), "brain": "neo4j_via_assistx"}
+            # /health is public; transport exceptions may contain private URLs,
+            # userinfo, response fragments, or upstream credential material.
+            return {"reachable": False, "error": type(exc).__name__, "brain": "neo4j_via_assistx"}
 
     async def get_backlog_candidates(self, limit: int = 25) -> list[AssignmentCandidate]:
         url = f"{self.base_url}/api/router/backlog-candidates"
@@ -300,31 +302,68 @@ class RouterClient:
         self.base_url = settings.router_base_url.rstrip("/")
         self.timeout = settings.router_timeout_seconds
         self._admin_token = (settings.router_admin_token or "").strip()
-        self._client = httpx.AsyncClient(timeout=self.timeout)
+        # Never allow HTTP_PROXY/HTTPS_PROXY environment inheritance to forward
+        # Router admin credentials through a third-party proxy. Never follow
+        # redirects on a credential-bearing admin request.
+        self._client = httpx.AsyncClient(
+            timeout=self.timeout, trust_env=False, follow_redirects=False,
+        )
 
     async def close(self):
         await self._client.aclose()
 
-    def _default_headers(self) -> dict[str, str]:
+    def _default_headers(self, *, admin: bool = False) -> dict[str, str]:
         hdrs = inject_trace_headers()
-        # Router admin endpoints require AUTO_ROUTER_ADMIN_TOKEN; without it the
-        # snapshot silently degrades to unreachable (401 on every admin probe).
-        token = self._admin_token
-        if token:
-            hdrs["X-Admin-Token"] = token
+        # Never attach operator/admin credentials to public health checks or
+        # the anonymous negative-control request.
+        if admin and self._admin_token:
+            hdrs["X-Admin-Token"] = self._admin_token
         return hdrs
 
     async def health(self) -> dict[str, Any]:
         try:
-            response = await self._client.get(f"{self.base_url}/health", headers=self._default_headers())
+            response = await self._client.get(
+                f"{self.base_url}/health", headers=self._default_headers()
+            )
             return {"reachable": response.is_success, "status_code": response.status_code}
         except Exception as exc:
-            return {"reachable": False, "error": str(exc)}
+            # The app exposes dependency health. Exception messages from
+            # third-party transport/proxy code can contain URL userinfo,
+            # environment settings or other secrets; return only a type.
+            return {"reachable": False, "error": type(exc).__name__}
 
     async def snapshot(self) -> RouterSnapshot:
         snapshot = RouterSnapshot(reachable=False)
+        # A configured admin token is required; public /health alone never
+        # establishes authorization to load routing or service metadata.
+        if not self._admin_token:
+            return snapshot
         try:
-            hdrs = self._default_headers()
+            # Guard the entire admin snapshot dependency, not only context:
+            # a mixed-version Router can require auth for /admin/context but
+            # still expose quota, circuits, or ops metadata anonymously.
+            # Never send the token until every required path denies anonymity.
+            # Optional /admin/agent-clis may be absent (404) on both versions.
+            # Never read or log the anonymous response bodies.
+            paths = (
+                "/admin/context", "/admin/quota", "/admin/circuits",
+                "/admin/agent-clis", "/admin/ops/summary",
+            )
+            anonymous = await asyncio.gather(*(
+                self._client.get(
+                    f"{self.base_url}{path}",
+                    headers=self._default_headers(),
+                    follow_redirects=False,
+                )
+                for path in paths
+            ))
+            if any(resp.status_code not in (401, 403)
+                   for resp in (anonymous[0], anonymous[1], anonymous[2], anonymous[4])):
+                return snapshot
+            if anonymous[3].status_code not in (401, 403, 404):
+                return snapshot
+
+            hdrs = self._default_headers(admin=True)
             context_resp, quota_resp, circuits_resp, clis_resp, ops_resp = await asyncio.gather(
                 self._client.get(f"{self.base_url}/admin/context", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/quota", headers=hdrs),
@@ -332,19 +371,29 @@ class RouterClient:
                 self._client.get(f"{self.base_url}/admin/agent-clis", headers=hdrs),
                 self._client.get(f"{self.base_url}/admin/ops/summary", headers=hdrs),
             )
+            # All required, scoped admin reads must explicitly succeed. The
+            # deprecated /admin/agent-clis endpoint is optional and may 404.
+            required = (context_resp, quota_resp, circuits_resp, ops_resp)
+            if any(response.status_code != 200 for response in required):
+                return snapshot
+            if clis_resp.status_code not in (200, 404):
+                return snapshot
 
+            # Only publish a fully parsed, validated snapshot. If any response
+            # body is malformed, the caller receives the original empty state.
+            candidate = RouterSnapshot(reachable=False)
             self._apply_snapshot_payloads(
-                snapshot=snapshot,
-                context_payload=context_resp.json() if context_resp.is_success else {},
-                quota_payload=quota_resp.json() if quota_resp.is_success else {},
-                circuits_payload=circuits_resp.json() if circuits_resp.is_success else {},
-                clis_payload=clis_resp.json() if clis_resp.is_success else {},
-                ops_payload=ops_resp.json() if ops_resp.is_success else {},
-                reachable=context_resp.is_success,
+                snapshot=candidate,
+                context_payload=context_resp.json(),
+                quota_payload=quota_resp.json(),
+                circuits_payload=circuits_resp.json(),
+                clis_payload=clis_resp.json() if clis_resp.status_code == 200 else {},
+                ops_payload=ops_resp.json(),
+                reachable=True,
             )
+            return candidate if candidate.reachable else snapshot
         except Exception:
-            snapshot.reachable = False
-        return snapshot
+            return snapshot
 
     def _apply_snapshot_payloads(
         self,
