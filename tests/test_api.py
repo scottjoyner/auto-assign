@@ -48,7 +48,7 @@ class FakeRouterClient(RouterClient):
 
 
 def make_service(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'api.sqlite3'}", api_token="synthetic-fixture-only")
     return AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
@@ -60,7 +60,7 @@ def make_service(tmp_path):
 
 def make_client(tmp_path):
     app.state.assignment_service = make_service(tmp_path)
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Bearer synthetic-fixture-only"})
 
 
 def create_assignment(client: TestClient, task_id: str = "ASS-api") -> dict:
@@ -262,7 +262,7 @@ def test_stale_heartbeat_watchdog_reports_cache_visibility(tmp_path):
 def test_outbox_reconcile_marks_graph_applied_events_delivered(tmp_path):
     service = make_service(tmp_path)
     app.state.assignment_service = service
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": "Bearer synthetic-fixture-only"})
 
     payload = create_assignment(client, "ASS-reconcile")
     key = payload["idempotency_key"]
