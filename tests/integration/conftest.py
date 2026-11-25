@@ -108,7 +108,7 @@ def assign_client(tmp_path):
         scheduler_enabled=False,
         dispatch_enabled=True,
         direct_workers_enabled=False,
-        api_token="",
+        api_token="synthetic-fixture-only",
     )
     service = AssignmentService(
         settings=settings,
@@ -122,7 +122,7 @@ def assign_client(tmp_path):
     app.state.assignment_service = service
     try:
         # Actual FastAPI middleware, dependencies and routes, not an HTTP stub.
-        with TestClient(app, raise_server_exceptions=True) as client:
+        with TestClient(app, raise_server_exceptions=True, headers={"Authorization": "Bearer synthetic-fixture-only"}) as client:
             yield client
     finally:
         if old_present:
