@@ -32,7 +32,7 @@ class FakeRouterClient(RouterClient):
 
 
 def make_client(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'control.sqlite3'}")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'control.sqlite3'}", api_token="synthetic-fixture-only")
     app.state.assignment_service = AssignmentService(
         settings=settings,
         cache=CacheStore(settings.sqlite_path),
@@ -40,7 +40,7 @@ def make_client(tmp_path):
         router=FakeRouterClient(settings),
         scorer=AssignmentScorer(settings),
     )
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Bearer synthetic-fixture-only"})
 
 
 def set_control(client: TestClient, mode: str) -> None:
