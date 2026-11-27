@@ -407,7 +407,13 @@ class CacheStore:
                 f"UPDATE assignments SET {', '.join(updates)} WHERE assignment_id=?",
                 params,
             )
-            if worker_id or node_id:
+            # The payload_json mirror is the read model used by the claim and
+            # completion lifecycle via get_assignment(). A status-only update
+            # (e.g. completion marking an assignment done/failed) must refresh
+            # it too: leaving a stale "recommended" mirror re-opens a terminal
+            # assignment for claiming. worker_id/node_id are not required for
+            # the mirror to be worth refreshing.
+            if worker_id or node_id or status is not None:
                 row = conn.execute(
                     "SELECT payload_json FROM assignments WHERE assignment_id=?",
                     (assignment_id,),
