@@ -28,7 +28,18 @@ HOSTED_LANES = {Lane.FREE_API}
 # AssistX Neo4j is the source of truth for task lifecycle.
 # These are local cache optimizations to avoid round-trips.
 # If there's a mismatch, AssistX's answer wins.
-TERMINAL_STATUSES = {"done", "cancelled", "failed_terminal", "terminal", "complete", "completed"}
+# `failed` is the canonical AssistX FAILED task state (docs/STATE_MACHINE_MAPPING.md):
+# AssistX is the source of truth, so a terminal failure must never be re-recommended
+# for local execution just because it is not one of the "done" spellings.
+TERMINAL_STATUSES = {
+    "done",
+    "cancelled",
+    "failed",
+    "failed_terminal",
+    "terminal",
+    "complete",
+    "completed",
+}
 ACTIVE_ASSIGNMENT_STATUSES = {"reserved", "dispatched", "running", "claimed", "claimed_passive"}
 
 
