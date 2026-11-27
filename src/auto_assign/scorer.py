@@ -136,12 +136,16 @@ class AssignmentScorer:
                     reason="deprecated execution lane; use router_model, local_only, or free_api",
                 )
             )
-        if lane == Lane.ROUTER_MODEL and (local_only or not candidate.allow_cloud):
+        # router_model is a cloud lane (it is already denied when cloud is
+        # disallowed). Sensitive work must be barred from it just as it is from
+        # free_api, otherwise a router-only evaluation recommends cloud
+        # execution for voice-auth/enrollment/secret-labeled work.
+        if lane == Lane.ROUTER_MODEL and (sensitive or local_only or not candidate.allow_cloud):
             skips.append(
                 SkipReason(
                     lane=lane,
                     reason_code="router_cloud_denied",
-                    reason="router model lane is skipped because the task is local-only or cloud-disallowed",
+                    reason="router model lane is skipped because the task is sensitive, local-only or cloud-disallowed",
                 )
             )
         if lane == Lane.DIRECT_WORKER and not self.settings.direct_workers_enabled:
