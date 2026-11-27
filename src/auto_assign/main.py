@@ -196,7 +196,14 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
     router = await service.router.health()
     cache = service.cache.health()
     control = get_assignment_control(service).get()
-    deps_ok = cache.get("reachable") and assistx.get("reachable")
+    # The router is published in `deps` and gates the router_model/free_api
+    # lanes, so an unreachable router must degrade the verdict too; otherwise
+    # /health reports ok=true while a declared dependency is down (sweep31x).
+    deps_ok = (
+        cache.get("reachable")
+        and assistx.get("reachable")
+        and router.get("reachable")
+    )
     status = "ok" if deps_ok else "degraded"
 
     outbox = cache.outbox_summary() if hasattr(cache, "outbox_summary") else {}
