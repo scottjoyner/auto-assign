@@ -119,7 +119,12 @@ class AssistXClient:
                 response = await self._client.request(method, url, headers=headers, auth=self._auth, **kwargs)
                 if response.is_success or response.status_code in (409, 404):
                     return response
-                if response.status_code < 500:
+                # On the final attempt, return the last retryable (5xx) response
+                # so callers can inspect its status_code. Falling through would
+                # execute `raise last_exc` with last_exc=None (no exception was
+                # ever caught), i.e. TypeError: exceptions must derive from
+                # BaseException — hiding the upstream failure entirely.
+                if response.status_code < 500 or attempt == max_retries:
                     return response
             except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 last_exc = exc
