@@ -226,7 +226,10 @@ class AssignmentScorer:
             return False
         metadata = router.quota.get("metadata", {})
         mode = metadata.get("mode") or router.quota.get("mode")
-        return mode == "preserve"
+        # The router's canonical "preserve" quota policy may arrive in any
+        # casing or with padding; normalise before deciding, so a cosmetic
+        # difference cannot silently re-enable the hosted/free-API lane.
+        return str(mode).strip().lower() == "preserve"
 
     def _is_sensitive(self, candidate: AssignmentCandidate) -> bool:
         labels = {str(label).lower() for label in candidate.privacy_labels}
