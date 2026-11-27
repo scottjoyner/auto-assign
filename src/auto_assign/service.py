@@ -32,6 +32,14 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Outcomes that are *not* terminal for inbound event dedup. A "skipped" action
+# (e.g. missing task_id) or an "ignored" action (no processor registered yet)
+# must stay retryable: AssistX redelivers with a stable idempotency key, so a
+# corrected payload or a later-registered processor would otherwise be silently
+# suppressed by the local processing marker. Success statuses and any future
+# status remain deduped, preserving existing behavior.
+NON_TERMINAL_INBOUND_STATUSES = frozenset({"skipped", "ignored"})
+
 
 class AssignmentService:
     def __init__(
@@ -83,7 +91,9 @@ class AssignmentService:
                 "SELECT status FROM inbound_event_processing WHERE idempotency_key = ?",
                 (idempotency_key,),
             ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+        return row["status"] not in NON_TERMINAL_INBOUND_STATUSES
 
     def _mark_inbound_event_processed(self, event: dict, action: dict) -> None:
         now = utc_now().isoformat()
