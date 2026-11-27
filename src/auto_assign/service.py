@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .cache import CacheStore
 from .clients import AssistXClient, RouterClient
@@ -312,6 +312,23 @@ class AssignmentService:
         return event
 
     def ingest_event(self, event: EventEnvelope) -> dict:
+        # The canonical EventEnvelope requires a valid UUID correlation_id so
+        # every event for a task lands in one trace group (W-05/W-06). The local
+        # EventEnvelope model does not enforce that invariant, so fail closed at
+        # the admission boundary instead of persisting malformed correlation
+        # IDs into the durable inbound mirror.
+        try:
+            UUID(str(event.correlation_id))
+        except (ValueError, AttributeError, TypeError):
+            return {
+                "accepted": False,
+                "reason": "invalid_correlation_id",
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "idempotency_key": event.idempotency_key,
+                "source": "sqlite_inbound_event_cache",
+                "canonical_source": "neo4j_via_assistx",
+            }
         self.cache.record_inbound_event(event)
         return {
             "accepted": True,
