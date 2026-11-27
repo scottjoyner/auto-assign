@@ -199,7 +199,11 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
     deps_ok = cache.get("reachable") and assistx.get("reachable")
     status = "ok" if deps_ok else "degraded"
 
-    outbox = cache.outbox_summary() if hasattr(cache, "outbox_summary") else {}
+    # `cache` here is the dict returned by CacheStore.health(), not the store
+    # itself. The old hasattr() guard was therefore always false, pinning this
+    # gauge to 0 even when the local outbox had pending events. Read the real
+    # store so the metric cannot fail open on a stuck/failing outbox.
+    outbox = service.cache.outbox_summary()
     OUTBOX_PENDING.set(int(outbox.get("pending", 0)))
     stale = service.list_stale_heartbeats(limit=1)
     STALE_HEARTBEATS.set(stale.get("count", 0))
