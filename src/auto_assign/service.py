@@ -668,6 +668,9 @@ class AssignmentService:
             subject={"kind": "assignment", "id": assignment_id},
             correlation_id=request.correlation_id,
             payload={
+                # Caller metadata is advisory: spread it FIRST so the authoritative
+                # claim context below cannot be overwritten in the canonical event.
+                **request.metadata,
                 **self._assignment_event_context(
                     assignment_id,
                     assignment,
@@ -682,7 +685,6 @@ class AssignmentService:
                 "route_id": request.route_id,
                 "capabilities": request.capabilities,
                 "correlation_id": request.correlation_id,
-                **request.metadata,
             },
         )
         self.cache.enqueue_event(event)
@@ -710,6 +712,8 @@ class AssignmentService:
             subject={"kind": "assignment", "id": assignment_id},
             correlation_id=request.correlation_id,
             payload={
+                # Advisory metadata first; authoritative completion fields below win.
+                **request.metadata,
                 **self._assignment_event_context(
                     assignment_id,
                     assignment,
@@ -722,7 +726,6 @@ class AssignmentService:
                 "summary": request.summary,
                 "artifacts": request.artifacts,
                 "correlation_id": request.correlation_id,
-                **request.metadata,
             },
         )
         self.cache.enqueue_event(event)
