@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def correlation_for_task(task_id: str) -> str:
@@ -72,6 +72,16 @@ class EventEnvelope(BaseModel):
     correlation_id: str = Field(default_factory=lambda: str(uuid4()))
     actor: dict[str, Any] | None = None
     links: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("correlation_id")
+    @classmethod
+    def _valid_correlation_id(cls, value: str) -> str:
+        """Fail closed before emission, not at the AssistX event boundary."""
+        try:
+            UUID(value)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError("correlation_id must be a valid UUID") from exc
+        return value
 
 
 class AssignmentCandidate(BaseModel):
