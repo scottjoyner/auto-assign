@@ -32,6 +32,11 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Only an assignment with a live local lease may be completed, and only by the
+# worker that owns that lease. Without this fence any caller could mark an
+# unclaimed/recommended assignment done and emit a terminal graph event.
+COMPLETABLE_ASSIGNMENT_STATUSES = frozenset({"running"})
+
 
 class AssignmentService:
     def __init__(
@@ -699,6 +704,13 @@ class AssignmentService:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
             return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        if assignment.get("status") not in COMPLETABLE_ASSIGNMENT_STATUSES:
+            return {
+                "accepted": False,
+                "reason": f"assignment status '{assignment.get('status')}' is not completable",
+            }
+        if assignment.get("worker_id") != request.worker_id:
+            return {"accepted": False, "reason": "assignment is owned by a different worker"}
 
         status = "done" if request.status == "success" else "failed"
         self.cache.update_assignment_status(assignment_id, status=status)
