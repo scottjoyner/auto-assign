@@ -339,17 +339,19 @@ class CacheStore:
             rows = conn.execute(sql, params).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
-    def mark_event_delivered(self, idempotency_key: str) -> None:
+    def mark_event_delivered(self, idempotency_key: str) -> bool:
+        """Mark a pending/failed outbox row delivered; report whether one changed."""
         now = utc_now().isoformat()
         with self.connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE outbox_events
                 SET status='delivered', updated_at=?, last_error=NULL
-                WHERE idempotency_key=?
+                WHERE idempotency_key=? AND status IN ('pending', 'failed')
                 """,
                 (now, idempotency_key),
             )
+            return cursor.rowcount > 0
 
     def mark_event_failed(self, idempotency_key: str, error: str, dead_letter: bool = False) -> None:
         now = utc_now().isoformat()
@@ -365,11 +367,17 @@ class CacheStore:
             )
 
     def reconcile_delivered(self, idempotency_keys: list[str]) -> int:
-        count = 0
-        for key in idempotency_keys:
-            self.mark_event_delivered(key)
-            count += 1
-        return count
+        """Count only rows actually transitioned to delivered, once per key.
+
+        Unknown keys (a row can vanish between listing and reconciliation) and
+        repeated keys must not inflate the API-visible reconciled_delivered
+        metric.
+        """
+        return sum(
+            1
+            for key in dict.fromkeys(idempotency_keys)
+            if self.mark_event_delivered(key)
+        )
 
     def outbox_summary(self) -> dict[str, int]:
         with self.connect() as conn:
