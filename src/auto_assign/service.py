@@ -649,6 +649,10 @@ class AssignmentService:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
             return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        # The body task_id is copied into the claim's canonical event payload
+        # below; it must name the task this assignment was created for.
+        if request.task_id != assignment.get("task_id"):
+            return {"accepted": False, "reason": "request task_id does not match assignment"}
         if assignment.get("status") not in ("recommended", "reserved"):
             return {"accepted": False, "reason": f"assignment status '{assignment.get('status')}' is not claimable"}
 
@@ -699,6 +703,11 @@ class AssignmentService:
         assignment = self.cache.get_assignment(assignment_id)
         if assignment is None:
             return {"accepted": False, "reason": "assignment_not_found_in_local_cache"}
+        # Completion events inherit task_id from the request; without this
+        # fence a caller can attribute this assignment's completion to another
+        # task in the canonical graph.
+        if request.task_id != assignment.get("task_id"):
+            return {"accepted": False, "reason": "request task_id does not match assignment"}
 
         status = "done" if request.status == "success" else "failed"
         self.cache.update_assignment_status(assignment_id, status=status)
