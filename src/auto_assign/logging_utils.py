@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 
 from .metrics import REQUEST_LATENCY, REQUESTS
-from .tracing_utils import set_trace_context
+from .tracing_utils import set_trace_id, valid_trace_id
 
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -65,11 +65,13 @@ def setup_logging() -> None:
 def install_logging_middleware(app: FastAPI) -> None:
     @app.middleware("http")
     async def _correlation_id_middleware(request: Request, call_next: Callable) -> Response:
-        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
-        trace_id = request.headers.get("X-Trace-ID") or cid
+        cid = valid_trace_id(request.headers.get("X-Correlation-ID")) or str(uuid.uuid4())
+        trace_id = valid_trace_id(request.headers.get("X-Trace-ID")) or cid
         request.state.correlation_id = cid
         request.state.trace_id = trace_id
-        set_trace_context(request)
+        # The value echoed to the caller, logged and forwarded downstream must
+        # be one and the same validated token.
+        set_trace_id(trace_id)
         start = time.time()
         response: Response = await call_next(request)
         response.headers["X-Correlation-ID"] = cid
@@ -90,8 +92,13 @@ def install_logging_middleware(app: FastAPI) -> None:
 
 def trace_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
-    cid = getattr(request.state, "correlation_id", None) or request.headers.get("X-Correlation-ID", "")
-    tid = getattr(request.state, "trace_id", None) or request.headers.get("X-Trace-ID", "")
+    cid = valid_trace_id(
+        getattr(request.state, "correlation_id", None)
+        or request.headers.get("X-Correlation-ID", "")
+    )
+    tid = valid_trace_id(
+        getattr(request.state, "trace_id", None) or request.headers.get("X-Trace-ID", "")
+    )
     if cid:
         headers["X-Correlation-ID"] = cid
     if tid:
