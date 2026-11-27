@@ -163,6 +163,18 @@ class CacheStore:
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
 
+    def get_assignment_status(self, assignment_id: str) -> str | None:
+        """Read the authoritative status column, not the payload_json mirror.
+
+        Status-only updates refresh the column but leave payload_json stale, so
+        lifecycle fences must consult the column before renewing a lease.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM assignments WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()
+        return row["status"] if row else None
+
     def record_heartbeat(self, heartbeat_id: str, heartbeat: HeartbeatRequest) -> None:
         now = utc_now().isoformat()
         with self.connect() as conn:

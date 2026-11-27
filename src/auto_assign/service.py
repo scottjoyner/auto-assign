@@ -32,6 +32,23 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Statuses whose lease must never be renewed by a late heartbeat.  A completed
+# or released assignment is terminal in the authoritative status column even if
+# the payload_json mirror still reports an active state.
+NON_RENEWABLE_ASSIGNMENT_STATUSES = frozenset(
+    {
+        "blocked",
+        "cancelled",
+        "complete",
+        "completed",
+        "done",
+        "failed",
+        "failed_terminal",
+        "released",
+        "terminal",
+    }
+)
+
 
 class AssignmentService:
     def __init__(
@@ -743,11 +760,20 @@ class AssignmentService:
         assignment = None
         if heartbeat.assignment_id:
             assignment = self.cache.get_assignment(heartbeat.assignment_id)
-            if assignment and assignment.get("worker_id") == heartbeat.worker_id:
+            # get_assignment() returns payload_json, which is not refreshed by
+            # status-only completion updates. Judge renewability on the
+            # authoritative column, and never write status from the stale
+            # mirror here — doing so would revive a terminal assignment.
+            authoritative_status = self.cache.get_assignment_status(heartbeat.assignment_id)
+            if (
+                assignment
+                and heartbeat.worker_id
+                and assignment.get("worker_id") == heartbeat.worker_id
+                and authoritative_status not in NON_RENEWABLE_ASSIGNMENT_STATUSES
+            ):
                 renewed_lease_expires = utc_now().timestamp() + self.settings.default_lease_seconds
                 self.cache.update_assignment_status(
                     heartbeat.assignment_id,
-                    status=assignment.get("status", "running"),
                     lease_expires_at=renewed_lease_expires,
                 )
                 lease_renewed = True
