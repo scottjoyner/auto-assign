@@ -396,7 +396,9 @@ def _assignment_summary_recommendations(
     outbox = ops.get("outbox_by_status", {}) or {}
     assignments = ops.get("assignments_by_status", {}) or {}
     control = control or {"mode": "enabled", "new_assignments_allowed": True, "scheduler_ticks_allowed": True}
-    mode = control.get("mode") or "enabled"
+    mode = control.get("mode")
+    if mode is None:
+        mode = "enabled"
     pending = int(outbox.get("pending", 0))
     failed = int(outbox.get("failed", 0))
     dead_letter = int(outbox.get("dead_letter", 0))
@@ -414,6 +416,20 @@ def _assignment_summary_recommendations(
                 "level": "warning",
                 "action": "drain_assignment_governor",
                 "reason": "assignment control is draining; finish/reconcile existing work and avoid new recommendations",
+            }
+        )
+    elif mode != "enabled":
+        # An unrecognized mode still makes control_state_for_mode() fail closed
+        # (every *_allowed flag False). Reporting "steady_state" here would hide
+        # a fully disabled governor from the operator summary.
+        recommendations.append(
+            {
+                "level": "warning",
+                "action": "inspect_unknown_assignment_control_mode",
+                "reason": (
+                    f"assignment control mode {mode!r} is not recognized; "
+                    "new assignments and ticks are fail-closed disabled and need operator review"
+                ),
             }
         )
     if pending:
