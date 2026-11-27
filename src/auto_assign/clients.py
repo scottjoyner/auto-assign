@@ -15,6 +15,10 @@ from .tracing_utils import inject_trace_headers
 logger = logging.getLogger(__name__)
 
 
+class MalformedCandidateError(ValueError):
+    """A backlog payload has no authoritative task identifier."""
+
+
 class AssistXClient:
     """Client for AssistX, the canonical task/policy/Neo4j boundary.
 
@@ -66,7 +70,17 @@ class AssistXClient:
             response.raise_for_status()
             payload = response.json()
             items = self._extract_items(payload)
-            return [self._candidate_from_item(item) for item in items]
+            candidates: list[AssignmentCandidate] = []
+            for item in items:
+                try:
+                    candidates.append(self._candidate_from_item(item))
+                except MalformedCandidateError:
+                    # A title or placeholder is not a task identity. Skipping
+                    # the malformed item keeps valid backlog work moving while
+                    # refusing to fabricate an id that would collide in the
+                    # decision idempotency key and dispatch create_task().
+                    logger.warning("skipping backlog candidate without a task identifier")
+            return candidates
         except Exception:
             return []
 
@@ -221,7 +235,12 @@ class AssistXClient:
     def _candidate_from_item(self, item: dict[str, Any]) -> AssignmentCandidate:
         raw = dict(item)
         if "task_id" not in raw:
-            raw["task_id"] = raw.get("id") or raw.get("uuid") or raw.get("title") or "unknown-task"
+            raw["task_id"] = raw.get("id") or raw.get("uuid")
+        if not str(raw.get("task_id") or "").strip():
+            # task_id drives the decision idempotency key, assignment id,
+            # trace correlation and dispatch create_task(). Never derive it
+            # from a human-readable title or a constant placeholder.
+            raise MalformedCandidateError("backlog candidate requires a non-empty task identifier")
 
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
         labels = self._label_set(raw.get("privacy_labels"))
