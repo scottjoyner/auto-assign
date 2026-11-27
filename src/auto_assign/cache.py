@@ -426,7 +426,15 @@ class CacheStore:
                     )
             return cursor.rowcount > 0
 
-    def expire_stale_assignments(self, stale_seconds: int = 3600) -> list[str]:
+    def expire_stale_assignments(
+        self, stale_seconds: int = 3600, dry_run: bool = False
+    ) -> list[str]:
+        """Return expired lease ids; release them only when ``dry_run`` is false.
+
+        A dry-run scheduler tick is a preview: it must report which leases would
+        expire without consuming them. The SELECT is identical in both modes so
+        the preview and the real release agree on the same rows.
+        """
         cutoff = (utc_now() - timedelta(seconds=stale_seconds)).isoformat()
         expired_ids: list[str] = []
         with self.connect() as conn:
@@ -441,10 +449,11 @@ class CacheStore:
             ).fetchall()
             for row in rows:
                 aid = row["assignment_id"]
-                conn.execute(
-                    "UPDATE assignments SET status='released', updated_at=? WHERE assignment_id=?",
-                    (utc_now().isoformat(), aid),
-                )
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE assignments SET status='released', updated_at=? WHERE assignment_id=?",
+                        (utc_now().isoformat(), aid),
+                    )
                 expired_ids.append(aid)
         return expired_ids
 

@@ -194,7 +194,7 @@ class AssignmentService:
 
         scheduler_run_id = f"tick_{uuid4().hex[:12]}"
         self.last_tick_at = decisions[-1].created_at.isoformat() if decisions else None
-        expired = self.expire_stale_leases()
+        expired = self.expire_stale_leases(dry_run=request.dry_run)
         response = SchedulerTickResponse(
             scheduler_run_id=scheduler_run_id,
             dry_run=request.dry_run,
@@ -782,25 +782,31 @@ class AssignmentService:
         self.cache.enqueue_event(event)
         return event
 
-    def expire_stale_leases(self) -> dict:
+    def expire_stale_leases(self, dry_run: bool = False) -> dict:
         # A lease is stale once its expiry has passed by at least the configured
         # grace (`stale_assignment_seconds`), kept separate from the lease length
         # (`default_lease_seconds`). Heartbeats use `stale_heartbeat_seconds`.
         grace = self.settings.stale_assignment_seconds
-        expired = self.cache.expire_stale_assignments(stale_seconds=grace)
+        expired = self.cache.expire_stale_assignments(stale_seconds=grace, dry_run=dry_run)
         expired_events = 0
-        for assignment_id in expired:
-            assignment = self.cache.get_assignment(assignment_id)
-            if assignment:
-                event = EventEnvelope(
-                    event_type=EventType.ASSIGNMENT_EXPIRED,
-                    idempotency_key=f"{EventType.ASSIGNMENT_EXPIRED}:{assignment_id}:{utc_now().isoformat()}",
-                    subject={"kind": "task", "id": assignment.get("task_id", assignment_id)},
-                    payload={
-                        **self._assignment_event_context(assignment_id, assignment),
-                        "reason": "lease_expired",
-                    },
-                )
-                self.cache.enqueue_event(event)
-                expired_events += 1
-        return {"expired_count": len(expired), "events_emitted": expired_events, "released_expired": len(expired)}
+        if not dry_run:
+            for assignment_id in expired:
+                assignment = self.cache.get_assignment(assignment_id)
+                if assignment:
+                    event = EventEnvelope(
+                        event_type=EventType.ASSIGNMENT_EXPIRED,
+                        idempotency_key=f"{EventType.ASSIGNMENT_EXPIRED}:{assignment_id}:{utc_now().isoformat()}",
+                        subject={"kind": "task", "id": assignment.get("task_id", assignment_id)},
+                        payload={
+                            **self._assignment_event_context(assignment_id, assignment),
+                            "reason": "lease_expired",
+                        },
+                    )
+                    self.cache.enqueue_event(event)
+                    expired_events += 1
+        return {
+            "expired_count": len(expired),
+            "events_emitted": expired_events,
+            "released_expired": len(expired),
+            "dry_run": dry_run,
+        }
