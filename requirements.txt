@@ -13,6 +13,6 @@ pytest
 pytest-asyncio
 ruff
 
-# NOTE: the orphan Flask speaker-clustering UI (archived/app.py + archived/templates)
+# NOTE: the orphan Flask speaker-clustering UI (archive/app.py + archive/templates)
 # used flask/torch/transformers. Those heavy ML deps are intentionally NOT part of
 # the base image. They remain available via the optional `flask` extra for reference.
