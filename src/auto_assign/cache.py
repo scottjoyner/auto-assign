@@ -214,6 +214,21 @@ class CacheStore:
             ).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def count_stale_heartbeats(self, stale_after_seconds: int) -> int:
+        """Count stale heartbeats with the same cutoff as ``list_stale_heartbeats``.
+
+        The list method is a read model bounded by ``limit``; observability must
+        use the same cutoff but an unbounded COUNT(*) so a growing stale
+        population cannot be hidden behind the page size.
+        """
+        cutoff = (utc_now() - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM heartbeats WHERE received_at < ?",
+                (cutoff,),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
     def _subject_storage_value(self, subject: Any) -> str:
         if isinstance(subject, str):
             return subject

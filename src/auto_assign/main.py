@@ -201,8 +201,11 @@ async def health(service: Annotated[AssignmentService, Depends(get_assignment_se
 
     outbox = cache.outbox_summary() if hasattr(cache, "outbox_summary") else {}
     OUTBOX_PENDING.set(int(outbox.get("pending", 0)))
-    stale = service.list_stale_heartbeats(limit=1)
-    STALE_HEARTBEATS.set(stale.get("count", 0))
+    # `list_stale_heartbeats(limit=1)` returns at most one row, so its `count`
+    # pinned this gauge to 0/1 regardless of how many heartbeats were stale.
+    # Use the same cutoff but an unbounded COUNT(*) so the metric cannot fail
+    # open on a growing stale population.
+    STALE_HEARTBEATS.set(service.stale_heartbeat_count())
 
     return HealthResponse(
         ok=deps_ok,

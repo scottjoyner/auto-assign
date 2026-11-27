@@ -594,6 +594,10 @@ class AssignmentService:
     def list_heartbeats(self, limit: int = 50) -> list[dict]:
         return self.cache.list_heartbeats(limit=limit)
 
+    def stale_heartbeat_count(self) -> int:
+        """True stale-heartbeat count for the gauge, independent of any read page limit."""
+        return self.cache.count_stale_heartbeats(self.settings.stale_heartbeat_seconds)
+
     def list_stale_heartbeats(self, stale_after_seconds: int | None = None, limit: int = 50) -> dict:
         threshold = stale_after_seconds or self.settings.stale_heartbeat_seconds
         stale = self.cache.list_stale_heartbeats(stale_after_seconds=threshold, limit=limit)
