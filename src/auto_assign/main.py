@@ -616,7 +616,12 @@ async def dispatch_outbox(
     try:
         body = await request.json()
         if isinstance(body, dict) and "dry_run" in body:
-            dry_run = bool(body["dry_run"])
+            # Only an explicit JSON boolean may override the query default.
+            # bool() coerced null/0/""/[]/{} to False, silently escalating a
+            # preview into a live outbox dispatch (sweep32x).
+            body_dry_run = body["dry_run"]
+            if isinstance(body_dry_run, bool):
+                dry_run = body_dry_run
     except Exception:
         pass
     return await service.dispatch_outbox(dry_run=dry_run, limit=limit)
