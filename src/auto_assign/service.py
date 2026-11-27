@@ -547,15 +547,19 @@ class AssignmentService:
         # LLM-tagged tasks are owned by the fleet executor (it polls
         # capabilities=llm and runs them on resident GPU nodes). Enqueuing them
         # to the local RQ worker makes it try to run them without a model and
-        # mark them FAILED, starving the fleet. Skip them here.
+        # mark them FAILED, starving the fleet. Skip them here. An
+        # unparseable/non-list capability declaration is *unknown*, not empty:
+        # it must never be admitted to the local RQ worker either.
         def _is_llm(item: dict) -> bool:
             caps = item.get("required_capabilities") or []
             if isinstance(caps, str):
                 try:
                     caps = json.loads(caps)
-                except Exception:
-                    caps = []
-            return isinstance(caps, list) and "llm" in caps
+                except (TypeError, ValueError):
+                    return True
+            if not isinstance(caps, list):
+                return True
+            return "llm" in caps
 
         llm_skipped = sum(1 for t in ready if _is_llm(t))
         dispatchable = [t for t in ready if not _is_llm(t)]
