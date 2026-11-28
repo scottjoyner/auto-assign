@@ -687,6 +687,13 @@ class AssignmentService:
                 )
                 lease_renewed = True
 
+        # HeartbeatRequest.correlation_id is optional (inbound callers may omit
+        # it), but EventEnvelope.correlation_id is required by the canonical
+        # contract. Derive the same deterministic UUID used by record_heartbeat
+        # when the caller did not supply one, and use it in the payload too.
+        correlation_id = heartbeat.correlation_id or correlation_for_task(
+            heartbeat.assignment_id or heartbeat.node_id
+        )
         event = EventEnvelope(
             event_type=EventType.ASSIGNMENT_HEARTBEAT,
             idempotency_key=f"{EventType.ASSIGNMENT_HEARTBEAT}:{heartbeat.node_id}:{heartbeat.worker_id}:{heartbeat.assignment_id}:{heartbeat_id}",
@@ -694,12 +701,12 @@ class AssignmentService:
                 "kind": "assignment" if heartbeat.assignment_id else "node",
                 "id": heartbeat.assignment_id or heartbeat.worker_id or heartbeat.node_id,
             },
-            correlation_id=heartbeat.correlation_id,
+            correlation_id=correlation_id,
             payload={
                 "heartbeat_id": heartbeat_id,
                 "lease_renewed": lease_renewed,
-                "correlation_id": heartbeat.correlation_id,
                 **heartbeat.model_dump(mode="json"),
+                "correlation_id": correlation_id,
                 **(
                     self._assignment_event_context(
                         heartbeat.assignment_id,

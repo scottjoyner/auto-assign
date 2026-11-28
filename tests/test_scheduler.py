@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+
+import pytest
+
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.models import (
@@ -17,6 +20,11 @@ from auto_assign.models import (
 from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService
 from auto_assign.settings import Settings
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 class FakeAssistXClient(AssistXClient):
@@ -66,6 +74,7 @@ def make_service(tmp_path):
 
 
 class TestSchedulerTick:
+    @pytest.mark.anyio
     async def test_scheduler_tick_evaluates_candidates(self, tmp_path):
         svc = make_service(tmp_path)
         response = await svc.scheduler_tick(
@@ -77,6 +86,7 @@ class TestSchedulerTick:
         assert response.decisions[0].task_id == "ASS-0"
         assert response.decisions[1].task_id == "ASS-1"
 
+    @pytest.mark.anyio
     async def test_scheduler_tick_with_task_ids(self, tmp_path):
         svc = make_service(tmp_path)
         response = await svc.scheduler_tick(
@@ -85,6 +95,7 @@ class TestSchedulerTick:
         assert response.evaluated == 2
         assert response.decisions[0].task_id == "CUSTOM-1"
 
+    @pytest.mark.anyio
     async def test_scheduler_tick_empty_candidates(self, tmp_path):
         svc = make_service(tmp_path)
         async def _empty_backlog(limit: int = 25):
@@ -96,6 +107,7 @@ class TestSchedulerTick:
         assert response.evaluated == 0
         assert response.recommended == 0
 
+    @pytest.mark.anyio
     async def test_scheduler_tick_records_run(self, tmp_path):
         svc = make_service(tmp_path)
         await svc.scheduler_tick(

@@ -1,3 +1,5 @@
+import pytest
+
 from auto_assign.cache import CacheStore
 from auto_assign.clients import AssistXClient, RouterClient
 from auto_assign.events import EventType
@@ -5,6 +7,11 @@ from auto_assign.models import AssignmentCandidate, AssignmentEvaluateRequest
 from auto_assign.scorer import AssignmentScorer
 from auto_assign.service import AssignmentService
 from auto_assign.settings import Settings
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 class FakeAssistXClient(AssistXClient):
@@ -37,6 +44,7 @@ def make_service(tmp_path):
     )
 
 
+@pytest.mark.anyio
 async def test_approval_required_decision_emits_approval_required_event(tmp_path):
     service = make_service(tmp_path)
 
@@ -48,6 +56,7 @@ async def test_approval_required_decision_emits_approval_required_event(tmp_path
     assert events[0]["payload"]["idempotency_key"].startswith(f"{EventType.ASSIGNMENT_DECISION}:")
 
 
+@pytest.mark.anyio
 async def test_blocked_nonapproval_decision_emits_skipped_event(tmp_path):
     service = make_service(tmp_path)
 
